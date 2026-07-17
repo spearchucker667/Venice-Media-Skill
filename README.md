@@ -256,6 +256,7 @@ venice-media validate-openapi
 ### Core Guides
 
 - [🏗️ **Architecture**](docs/architecture.md) - System design and trust zones
+- [🎯 **Threat Model**](docs/threat-model.md) - Comprehensive security analysis and risk assessment
 - [🤖 **Agent Workflow**](docs/agent-workflow.md) - How agents interact with the bridge
 - [🎬 **Media Generation Guide**](docs/media-generation-guide.md) - Complete media workflow documentation
 - [🔌 **Host Integrations**](docs/host-integrations.md) - Kimi Code, Codex, and other agent setup

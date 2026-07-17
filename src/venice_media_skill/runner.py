@@ -10,9 +10,30 @@ from typing import Any
 from .client import ApiResponse, VeniceClient
 from .errors import OutputError, RequestValidationError
 from .jobs import JobStore
-from .output import ArtifactWriter
+from .output import ArtifactWriter, _validate_safe_filename
 from .request import MediaRequest
 from .util import normalize_media_input, redact_data, timestamp_slug, utc_now_iso
+
+# VMS-017 FIX: Endpoint-specific media size limits (in bytes)
+# Based on Venice API documentation and best practices
+ENDPOINT_SIZE_LIMITS: dict[str, int] = {
+    "image.edit": 25 * 1024 * 1024,      # 25 MiB for image edit
+    "image.multi_edit": 25 * 1024 * 1024,  # 25 MiB for multi-edit
+    "image.background_remove": 25 * 1024 * 1024,  # 25 MiB for background removal
+    "audio.transcribe": 15 * 1024 * 1024,  # 15 MiB for audio transcription
+    "video.generate": 500 * 1024 * 1024,  # 500 MiB for video generation
+    "audio.generate": 500 * 1024 * 1024,  # 500 MiB for audio generation
+    # Default for other operations
+    "default": 50 * 1024 * 1024,
+}
+
+
+def _get_size_limit(operation: str) -> int:
+    """Get the size limit for a specific operation.
+    
+    VMS-017 FIX: Return endpoint-specific size limits.
+    """
+    return ENDPOINT_SIZE_LIMITS.get(operation, ENDPOINT_SIZE_LIMITS["default"])
 
 
 class MediaRunner:
@@ -64,8 +85,11 @@ class MediaRunner:
             "variants": 1,
             **request.parameters,
         }
-        variants = int(payload.get("variants", 1))
-        payload["return_binary"] = variants == 1
+        # VMS-011 FIX: Don't forcibly overwrite return_binary if user explicitly set it
+        # Only set default if not explicitly provided by user
+        if "return_binary" not in request.parameters:
+            variants = int(payload.get("variants", 1))
+            payload["return_binary"] = variants == 1
         if request.execution.dry_run:
             return self._dry_run(request, "/image/generate", payload)
         response = self.client.request("POST", "/image/generate", json_body=payload)
@@ -79,10 +103,14 @@ class MediaRunner:
             raw_image = images[0] if isinstance(images, list) and images else None
         if not isinstance(raw_image, str):
             raise RequestValidationError("image.edit requires a string inputs.image.")
+        # VMS-003 FIX: Use modelId instead of model for /image/edit endpoint
+        # API documentation shows modelId as the formal field, model as deprecated alias
+        # VMS-017 FIX: Use endpoint-specific size limit
+        size_limit = _get_size_limit(request.operation)
         payload = {
-            "model": request.model,
+            "modelId": request.model,
             "prompt": request.prompt,
-            "image": normalize_media_input(raw_image, max_bytes=25 * 1024 * 1024),
+            "image": normalize_media_input(raw_image, max_bytes=size_limit),
             "safe_mode": False,
             "output_format": "png",
             **request.parameters,
@@ -99,10 +127,12 @@ class MediaRunner:
             raise RequestValidationError(
                 "image.multi_edit requires string values in inputs.images."
             )
+        # VMS-017 FIX: Use endpoint-specific size limit
+        size_limit = _get_size_limit(request.operation)
         payload = {
             "modelId": request.model,
             "prompt": request.prompt,
-            "images": [normalize_media_input(item, max_bytes=25 * 1024 * 1024) for item in images],
+            "images": [normalize_media_input(item, max_bytes=size_limit) for item in images],
             "safe_mode": False,
             "output_format": "png",
             **request.parameters,
@@ -116,12 +146,22 @@ class MediaRunner:
         image = request.inputs.get("image")
         if not isinstance(image, str):
             raise RequestValidationError("image.upscale requires a string inputs.image.")
+        # VMS-004 FIX: Use API-aligned parameter names
+        # API expects: scale, enhance, enhanceCreativity, enhancePrompt
+        # Not: creativity (undocumented)
+        # VMS-017 FIX: Use endpoint-specific size limit
+        size_limit = _get_size_limit(request.operation)
         payload = {
-            "image": normalize_media_input(image, max_bytes=25 * 1024 * 1024),
+            "image": normalize_media_input(image, max_bytes=size_limit),
             "scale": 2,
-            "creativity": 0.01,
+            "enhance": False,
             **request.parameters,
         }
+        # Handle legacy creativity parameter by mapping to enhanceCreativity
+        if "creativity" in request.parameters:
+            payload["enhance"] = True
+            payload["enhanceCreativity"] = request.parameters["creativity"]
+            payload.pop("creativity", None)
         if request.execution.dry_run:
             return self._dry_run(request, "/image/upscale", payload)
         response = self.client.request("POST", "/image/upscale", json_body=payload)
@@ -131,7 +171,9 @@ class MediaRunner:
         image = request.inputs.get("image")
         if not isinstance(image, str):
             raise RequestValidationError("image.background_remove requires a string inputs.image.")
-        normalized = normalize_media_input(image, max_bytes=25 * 1024 * 1024)
+        # VMS-017 FIX: Use endpoint-specific size limit
+        size_limit = _get_size_limit(request.operation)
+        normalized = normalize_media_input(image, max_bytes=size_limit)
         payload = (
             {"image_url": normalized}
             if normalized.startswith(("http://", "https://"))
@@ -243,31 +285,58 @@ class MediaRunner:
         )
 
     def _retrieve_existing(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
-        assert request.model is not None
         queue_id = request.parameters.get("queue_id")
         assert isinstance(queue_id, str)
-        download_url = (
-            str(request.parameters["download_url"])
-            if request.parameters.get("download_url")
-            else None
-        )
+        
+        # SECURITY: Reject user-supplied download_url to prevent SSRF
+        # download_url should only come from provider responses, not manifests
+        if request.parameters.get("download_url"):
+            raise RequestValidationError(
+                "download_url must not be supplied in manifest. "
+                "URLs are obtained from Venice API responses only."
+            )
+        
+        # VMS-018 FIX: Infer model from job store if not provided in manifest
+        # This allows retrieval without requiring user to resupply the model
+        model = request.model
+        download_url = None
         try:
             record = self.jobs.get(queue_id)
         except OutputError:
+            # Create new job record if not found
+            if model is None:
+                raise RequestValidationError(
+                    "model is required when creating a new job record. "
+                    "Either provide model in manifest or use an existing queue_id."
+                )
             self.jobs.create(
                 media_type=media_type,
-                model=request.model,
+                model=model,
                 queue_id=queue_id,
                 request=request.to_dict(),
             )
         else:
+            # Infer model from job store if not provided
+            if model is None:
+                model = record.get("model")
+                if model is None:
+                    raise RequestValidationError(
+                        "model is required. Either provide model in manifest "
+                        "or ensure the job record contains a model."
+                    )
+            # Validate that provided model matches job store model
+            if model != record.get("model"):
+                raise RequestValidationError(
+                    f"Provided model '{model}' does not match job store model "
+                    f"'{record.get('model')}'. Use the correct model or omit it."
+                )
             saved_url = record.get("download_url")
-            if download_url is None and isinstance(saved_url, str):
-                download_url = saved_url
+            download_url = saved_url if isinstance(saved_url, str) else None
+        
         return self._poll_and_save(
             request,
             media_type=media_type,
-            model=request.model,
+            model=model,
             queue_id=queue_id,
             download_url=download_url,
         )
@@ -305,18 +374,39 @@ class MediaRunner:
                 if isinstance(status_payload, dict)
                 else ""
             )
-            if status == "COMPLETED" and download_url:
-                downloaded = self.client.download_public_url(download_url)
-                result = self._save(
-                    request,
-                    downloaded,
-                    api_request=retrieve_payload,
-                    queue_id=queue_id,
-                )
-                self.jobs.update(queue_id, status="completed", artifact=result.get("artifacts"))
-                self._complete_if_requested(request, media_type, model, queue_id)
-                return result
             if status == "COMPLETED":
+                # VMS-006 FIX: Check for download_url in current response, not just original
+                # Provider may return URL only at completion or rotate URLs
+                current_download_url = download_url
+                if isinstance(status_payload, dict):
+                    # Check various possible URL fields in the response
+                    for url_field in ("download_url", "url"):
+                        if isinstance(status_payload.get(url_field), str):
+                            current_download_url = status_payload[url_field]
+                            break
+                    # Also check nested structures
+                    if not current_download_url:
+                        data = status_payload.get("data")
+                        if isinstance(data, dict):
+                            for url_field in ("download_url", "url"):
+                                if isinstance(data.get(url_field), str):
+                                    current_download_url = data[url_field]
+                                    break
+                if current_download_url:
+                    # Update job store with new URL
+                    if current_download_url != download_url:
+                        self.jobs.update(queue_id, download_url=current_download_url)
+                    downloaded = self.client.download_public_url(current_download_url)
+                    result = self._save(
+                        request,
+                        downloaded,
+                        api_request=retrieve_payload,
+                        queue_id=queue_id,
+                    )
+                    self.jobs.update(queue_id, status="completed", artifact=result.get("artifacts"))
+                    self._complete_if_requested(request, media_type, model, queue_id)
+                    return result
+                # No download URL available
                 self.jobs.update(queue_id, status="completed_without_media")
                 raise OutputError(
                     "The queue reported COMPLETED but returned neither binary media nor a "
@@ -392,14 +482,20 @@ class MediaRunner:
                     payload[target] = [normalize_media_input(item) for item in values]
             if request.inputs.get("elements") is not None:
                 payload["elements"] = request.inputs["elements"]
-            if request.attestations.seedance_face_consent:
-                payload["consents"] = {
-                    "seedance": {
-                        "confirmed_terms_and_privacy": True,
-                        "confirmed_legal_right": True,
-                        "confirmed_screening_acknowledged": True,
-                    }
-                }
+            # VMS-005 FIX: Remove automatic consent pre-population
+            # Consent must be obtained through proper challenge-response flow
+            # The manifest boolean seedance_face_consent is NOT sufficient for consent
+            # Instead, the ConsentRequired exception will be raised by the client
+            # when the API returns 409 needs_consent, and the user must explicitly
+            # approve the exact policy text before resubmitting
+            # 
+            # This prevents bypassing provider consent requirements with a simple boolean.
+            # The proper flow is:
+            # 1. Submit without consent -> get 409 with policy_text
+            # 2. Show policy_text to user, get explicit confirmation
+            # 3. Resubmit same request with consents.seedance object
+            # 
+            # We intentionally do NOT automatically add consent here.
         return payload
 
     def _quote_payload(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
@@ -469,9 +565,27 @@ class MediaRunner:
             else self.writer.default_output_dir
         )
         directory.mkdir(parents=True, exist_ok=True)
+        
+        # NEW: Validate filename safety for transcript output
         extension = ".json" if response.json_data is not None else ".txt"
         filename = request.output.filename or f"audio-transcript-{timestamp_slug()}{extension}"
+        
+        if request.output.filename:
+            _validate_safe_filename(request.output.filename)
+        
+        # Resolve directory to absolute path
+        directory = directory.resolve()
+        
+        # Construct path and validate containment
         path = directory / filename
+        resolved_path = path.resolve()
+        if not resolved_path.parent.samefile(directory):
+            raise OutputError(
+                f"output.filename resolves to {resolved_path} which is outside "
+                f"the output directory {directory}"
+            )
+        path = resolved_path
+        
         if path.exists() and not request.output.overwrite:
             path = directory / f"{path.stem}-{timestamp_slug()}{path.suffix}"
         if response.json_data is not None:

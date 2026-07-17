@@ -548,7 +548,9 @@ def test_video_queue_payload_maps_all_input_shapes(tmp_path: Path) -> None:
     assert payload["video_url"].startswith("data:video/mp4;base64,")
     assert payload["reference_image_urls"][0].startswith("data:image/png;base64,")
     assert payload["elements"] == [{"name": "subject"}]
-    assert payload["consents"]["seedance"]["confirmed_legal_right"] is True
+    # VMS-005: Consent is no longer automatically added. It must go through
+    # the proper challenge-response flow. So we no longer expect consents here.
+    assert "consents" not in payload
 
 
 def test_video_quote_maps_video_input_and_allowlist(tmp_path: Path) -> None:

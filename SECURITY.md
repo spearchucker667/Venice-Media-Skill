@@ -76,6 +76,7 @@ Before merging changes, verify:
 
 - [Security & Privacy Guide](docs/security-and-privacy.md) - Detailed security best practices
 - [Architecture](docs/architecture.md) - System trust zones and boundaries
+- [Threat Model](docs/threat-model.md) - Comprehensive threat analysis and risk assessment
 - [Troubleshooting](docs/troubleshooting.md) - Common security-related issues
 
 ---

@@ -183,10 +183,16 @@ class MediaRequest:
             _require_queue_id(self)
         if self.operation == "audio.transcribe" and not self.inputs.get("audio"):
             raise RequestValidationError("audio.transcribe requires inputs.audio.")
+        # VMS-005: The seedance_face_consent boolean in the manifest is NOT sufficient
+        # for actual consent. It is kept for backwards compatibility but does NOT
+        # automatically add consent to API requests. Real consent requires the
+        # challenge-response flow with explicit user approval of policy text.
+        # This validation prevents misleading manifest configuration.
         if self.attestations.seedance_face_consent and not self.inputs:
             raise RequestValidationError(
-                "Seedance face consent was asserted but no input media is present. "
-                "Refusing ambiguous attestation."
+                "seedance_face_consent was asserted but no input media is present. "
+                "Note: This boolean does NOT provide actual consent - the proper "
+                "challenge-response flow with explicit user approval is required."
             )
 
     def to_dict(self) -> dict[str, Any]:
