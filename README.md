@@ -8,6 +8,14 @@
 
 ---
 
+<div align="center">
+
+<img src="docs/preview.png" alt="Venice Media Skill - Use Venice media generation from any AI CLI" width="100%" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+
+</div>
+
+---
+
 **Venice Media Skill** is a public-ready, host-neutral Agent Skill and Python bridge that lets an existing AI CLI use the Venice API for media generation **without replacing the original host agent**.
 
 The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or another shell-capable interface&mdash;continues to reason, ask questions, and manage the conversation. This package provides a narrow subprocess boundary for:
