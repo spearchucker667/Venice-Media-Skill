@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import ipaddress
 import importlib.metadata
+import ipaddress
 import json
 import socket
 from collections.abc import Mapping
@@ -74,7 +74,7 @@ class VeniceClient:
 
     def download_public_url(self, url: str) -> ApiResponse:
         """Download a pre-signed media URL without forwarding Venice credentials.
-        
+
         Security: This method validates URLs to prevent SSRF attacks by:
         - Requiring HTTPS (no HTTP)
         - Blocking loopback, private, link-local, multicast, and reserved IP addresses
@@ -83,18 +83,14 @@ class VeniceClient:
         """
         # Require HTTPS only (no HTTP)
         if not url.startswith("https://"):
-            raise ApiError(
-                0, 
-                "Only HTTPS URLs are allowed for downloads", 
-                payload={"url": url}
-            )
-        
+            raise ApiError(0, "Only HTTPS URLs are allowed for downloads", payload={"url": url})
+
         # Parse and validate the URL
         self._validate_url_safe(url)
-        
+
         # Configure streaming to handle large responses safely
         MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024  # 500MB limit
-        
+
         with httpx.Client(
             timeout=self._timeout_seconds,
             follow_redirects=True,
@@ -106,21 +102,21 @@ class VeniceClient:
                     headers={"User-Agent": f"venice-media-skill/{_get_package_version()}"},
                 )
             except httpx.NetworkError as exc:
-                raise ApiError(0, f"Network error downloading URL: {exc}", payload={"url": url})
-            
+                raise ApiError(
+                    0, f"Network error downloading URL: {exc}", payload={"url": url}
+                ) from exc
+
             # Validate redirect URL if redirect occurred
             if response.url != url:
                 self._validate_url_safe(response.url)
-            
+
             # Check for success
             if not response.is_success:
                 payload = _try_json(response)
                 raise ApiError(
-                    response.status_code, 
-                    _error_message(payload, response.text), 
-                    payload=payload
+                    response.status_code, _error_message(payload, response.text), payload=payload
                 )
-            
+
             # Check content length to prevent memory exhaustion
             content_length = response.headers.get("content-length")
             if content_length:
@@ -128,17 +124,17 @@ class VeniceClient:
                     cl = int(content_length)
                     if cl > MAX_DOWNLOAD_SIZE:
                         raise ApiError(
-                            413, 
+                            413,
                             f"Download size {cl} bytes exceeds maximum of {MAX_DOWNLOAD_SIZE}",
-                            payload={"url": url, "content_length": cl}
+                            payload={"url": url, "content_length": cl},
                         )
                 except ValueError:
                     pass
-            
+
             # For large responses, check actual content length
             content_type = response.headers.get("content-type", "application/octet-stream")
             payload = _try_json(response)
-            
+
             if _is_json_content_type(content_type):
                 return ApiResponse(
                     status_code=response.status_code,
@@ -146,26 +142,26 @@ class VeniceClient:
                     headers=response.headers,
                     json_data=payload,
                 )
-            
+
             # Check actual content size
             content = response.content
             if len(content) > MAX_DOWNLOAD_SIZE:
                 raise ApiError(
                     413,
                     f"Downloaded content size {len(content)} bytes exceeds maximum",
-                    payload={"url": url, "actual_size": len(content)}
+                    payload={"url": url, "actual_size": len(content)},
                 )
-            
+
             return ApiResponse(
                 status_code=response.status_code,
                 content_type=content_type,
                 headers=response.headers,
                 content=content,
             )
-    
+
     def _validate_url_safe(self, url: str) -> None:
         """Validate that a URL is safe to fetch (not SSRF-risky).
-        
+
         Blocks:
         - Non-HTTPS URLs
         - Loopback addresses (127.0.0.0/8, ::1, localhost)
@@ -178,12 +174,8 @@ class VeniceClient:
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
-            raise ApiError(
-                0,
-                "URL has no hostname",
-                payload={"url": url}
-            )
-        
+            raise ApiError(0, "URL has no hostname", payload={"url": url})
+
         # Try to parse as IP address
         try:
             ip = ipaddress.ip_address(hostname)
@@ -191,11 +183,11 @@ class VeniceClient:
             return
         except ValueError:
             pass  # Not an IP, try DNS resolution
-        
+
         # Try to resolve hostname to IPs
         try:
             # Get all A and AAAA records
-            for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None):
+            for _family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None):
                 ip_str = sockaddr[0]
                 try:
                     ip = ipaddress.ip_address(ip_str)
@@ -207,56 +199,32 @@ class VeniceClient:
             # But we can't validate it now, so we allow it
             # The request will fail if DNS resolution fails
             pass
-    
+
     def _validate_ip_safe(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
         """Validate that an IP address is not in a dangerous range."""
         # Loopback
         if ip.is_loopback:
-            raise ApiError(
-                0,
-                "Loopback addresses are not allowed",
-                payload={"ip": str(ip)}
-            )
-        
+            raise ApiError(0, "Loopback addresses are not allowed", payload={"ip": str(ip)})
+
         # Private networks
         if ip.is_private:
-            raise ApiError(
-                0,
-                "Private network addresses are not allowed",
-                payload={"ip": str(ip)}
-            )
-        
+            raise ApiError(0, "Private network addresses are not allowed", payload={"ip": str(ip)})
+
         # Link-local
         if ip.is_link_local:
-            raise ApiError(
-                0,
-                "Link-local addresses are not allowed",
-                payload={"ip": str(ip)}
-            )
-        
+            raise ApiError(0, "Link-local addresses are not allowed", payload={"ip": str(ip)})
+
         # Multicast
         if ip.is_multicast:
-            raise ApiError(
-                0,
-                "Multicast addresses are not allowed",
-                payload={"ip": str(ip)}
-            )
-        
+            raise ApiError(0, "Multicast addresses are not allowed", payload={"ip": str(ip)})
+
         # Reserved
         if ip.is_reserved:
-            raise ApiError(
-                0,
-                "Reserved addresses are not allowed",
-                payload={"ip": str(ip)}
-            )
-        
+            raise ApiError(0, "Reserved addresses are not allowed", payload={"ip": str(ip)})
+
         # Check for cloud metadata endpoints (explicit check)
         if str(ip) == "169.254.169.254":
-            raise ApiError(
-                0,
-                "Cloud metadata endpoint is not allowed",
-                payload={"ip": str(ip)}
-            )
+            raise ApiError(0, "Cloud metadata endpoint is not allowed", payload={"ip": str(ip)})
 
     def get_json(self, path: str, *, params: Mapping[str, Any] | None = None) -> Any:
         response = self.request("GET", path, params=params)

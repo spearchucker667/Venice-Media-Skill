@@ -17,7 +17,7 @@ from .util import normalize_media_input, redact_data, timestamp_slug, utc_now_is
 # VMS-017 FIX: Endpoint-specific media size limits (in bytes)
 # Based on Venice API documentation and best practices
 ENDPOINT_SIZE_LIMITS: dict[str, int] = {
-    "image.edit": 25 * 1024 * 1024,      # 25 MiB for image edit
+    "image.edit": 25 * 1024 * 1024,  # 25 MiB for image edit
     "image.multi_edit": 25 * 1024 * 1024,  # 25 MiB for multi-edit
     "image.background_remove": 25 * 1024 * 1024,  # 25 MiB for background removal
     "audio.transcribe": 15 * 1024 * 1024,  # 15 MiB for audio transcription
@@ -30,7 +30,7 @@ ENDPOINT_SIZE_LIMITS: dict[str, int] = {
 
 def _get_size_limit(operation: str) -> int:
     """Get the size limit for a specific operation.
-    
+
     VMS-017 FIX: Return endpoint-specific size limits.
     """
     return ENDPOINT_SIZE_LIMITS.get(operation, ENDPOINT_SIZE_LIMITS["default"])
@@ -287,7 +287,7 @@ class MediaRunner:
     def _retrieve_existing(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
         queue_id = request.parameters.get("queue_id")
         assert isinstance(queue_id, str)
-        
+
         # SECURITY: Reject user-supplied download_url to prevent SSRF
         # download_url should only come from provider responses, not manifests
         if request.parameters.get("download_url"):
@@ -295,20 +295,20 @@ class MediaRunner:
                 "download_url must not be supplied in manifest. "
                 "URLs are obtained from Venice API responses only."
             )
-        
+
         # VMS-018 FIX: Infer model from job store if not provided in manifest
         # This allows retrieval without requiring user to resupply the model
         model = request.model
         download_url = None
         try:
             record = self.jobs.get(queue_id)
-        except OutputError:
+        except OutputError as exc:
             # Create new job record if not found
             if model is None:
                 raise RequestValidationError(
                     "model is required when creating a new job record. "
                     "Either provide model in manifest or use an existing queue_id."
-                )
+                ) from exc
             self.jobs.create(
                 media_type=media_type,
                 model=model,
@@ -332,7 +332,7 @@ class MediaRunner:
                 )
             saved_url = record.get("download_url")
             download_url = saved_url if isinstance(saved_url, str) else None
-        
+
         return self._poll_and_save(
             request,
             media_type=media_type,
@@ -488,13 +488,13 @@ class MediaRunner:
             # Instead, the ConsentRequired exception will be raised by the client
             # when the API returns 409 needs_consent, and the user must explicitly
             # approve the exact policy text before resubmitting
-            # 
+            #
             # This prevents bypassing provider consent requirements with a simple boolean.
             # The proper flow is:
             # 1. Submit without consent -> get 409 with policy_text
             # 2. Show policy_text to user, get explicit confirmation
             # 3. Resubmit same request with consents.seedance object
-            # 
+            #
             # We intentionally do NOT automatically add consent here.
         return payload
 
@@ -565,17 +565,17 @@ class MediaRunner:
             else self.writer.default_output_dir
         )
         directory.mkdir(parents=True, exist_ok=True)
-        
+
         # NEW: Validate filename safety for transcript output
         extension = ".json" if response.json_data is not None else ".txt"
         filename = request.output.filename or f"audio-transcript-{timestamp_slug()}{extension}"
-        
+
         if request.output.filename:
             _validate_safe_filename(request.output.filename)
-        
+
         # Resolve directory to absolute path
         directory = directory.resolve()
-        
+
         # Construct path and validate containment
         path = directory / filename
         resolved_path = path.resolve()
@@ -585,7 +585,7 @@ class MediaRunner:
                 f"the output directory {directory}"
             )
         path = resolved_path
-        
+
         if path.exists() and not request.output.overwrite:
             path = directory / f"{path.stem}-{timestamp_slug()}{path.suffix}"
         if response.json_data is not None:

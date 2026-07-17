@@ -62,31 +62,25 @@ class ArtifactWriter:
             try:
                 # Create temp file in same directory for atomic rename
                 temp_fd, temp_path = tempfile.mkstemp(
-                    dir=directory,
-                    prefix=f".{artifact_path.name}.",
-                    suffix=".tmp"
+                    dir=directory, prefix=f".{artifact_path.name}.", suffix=".tmp"
                 )
                 os.write(temp_fd, content)
                 os.fsync(temp_fd)
                 os.close(temp_fd)
                 temp_fd = None
-                
+
                 # Atomic rename
                 os.rename(temp_path, str(artifact_path))
             except Exception:
                 # Clean up temp file on failure
                 if temp_fd:
-                    try:
+                    with suppress(Exception):
                         os.close(temp_fd)
-                    except Exception:
-                        pass
                 if os.path.exists(temp_path):
-                    try:
+                    with suppress(Exception):
                         os.unlink(temp_path)
-                    except Exception:
-                        pass
                 raise
-            
+
             artifact = {
                 "path": str(artifact_path.resolve()),
                 "content_type": content_type,
@@ -106,29 +100,23 @@ class ArtifactWriter:
                 sidecar_temp_path = None
                 try:
                     sidecar_temp_fd, sidecar_temp_path = tempfile.mkstemp(
-                        dir=directory,
-                        prefix=f".{sidecar.name}.",
-                        suffix=".tmp"
+                        dir=directory, prefix=f".{sidecar.name}.", suffix=".tmp"
                     )
                     content_str = json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n"
                     os.write(sidecar_temp_fd, content_str.encode("utf-8"))
                     os.fsync(sidecar_temp_fd)
                     os.close(sidecar_temp_fd)
                     sidecar_temp_fd = None
-                    
+
                     # Atomic rename
                     os.rename(sidecar_temp_path, str(sidecar))
                 except Exception:
                     if sidecar_temp_fd:
-                        try:
+                        with suppress(Exception):
                             os.close(sidecar_temp_fd)
-                        except Exception:
-                            pass
                     if sidecar_temp_path and os.path.exists(sidecar_temp_path):
-                        try:
+                        with suppress(Exception):
                             os.unlink(sidecar_temp_path)
-                        except Exception:
-                            pass
                     raise
                 artifact["metadata_path"] = str(sidecar.resolve())
             artifacts.append(artifact)
@@ -139,21 +127,21 @@ def _extract_blobs(response: ApiResponse) -> list[tuple[str, bytes]]:
     if response.content is not None:
         content_type = response.content_type.split(";", 1)[0]
         content = response.content
-        
+
         # VMS-008 FIX: Validate content type matches actual content
         if not validate_content_type(content, content_type):
             raise OutputError(
                 f"Content type mismatch: declared as {content_type} but content "
                 f"does not match expected format. Possible malicious response."
             )
-        
+
         # VMS-008 FIX: Check for suspicious content (e.g., HTML disguised as image)
         if is_suspicious_content(content, content_type):
             raise OutputError(
                 f"Suspicious content detected: declared as {content_type} but appears "
                 f"to contain HTML/XML or other unexpected content. Rejecting."
             )
-        
+
         return [(content_type, content)]
     return _extract_json_blobs(response.json_data)
 
@@ -187,7 +175,7 @@ def _extract_json_blobs(payload: Any) -> list[tuple[str, bytes]]:
 
 def _looks_like_base64(value: str) -> bool:
     """Check if a string looks like base64-encoded data.
-    
+
     VMS-015 FIX: More strict base64 detection to avoid misclassifying
     arbitrary strings. Requires:
     - Length >= 4 and divisible by 4 (base64 padding requirement)
@@ -197,23 +185,19 @@ def _looks_like_base64(value: str) -> bool:
     # Must have at least 4 characters (minimum meaningful base64)
     if len(value) < 4:
         return False
-    
+
     # Must be divisible by 4 (base64 padding)
     if len(value) % 4 != 0:
         return False
-    
+
     # Check that all characters are valid base64
-    import re
     # Base64 alphabet: A-Z, a-z, 0-9, +, /, = (padding)
-    if not re.fullmatch(r'[A-Za-z0-9+/=]*', value):
+    if not re.fullmatch(r"[A-Za-z0-9+/=]*", value):
         return False
-    
+
     # Must contain at least some alphanumeric characters
     # (strings with only +, /, = are probably not real base64)
-    if not re.search(r'[A-Za-z0-9]', value):
-        return False
-    
-    return True
+    return bool(re.search(r"[A-Za-z0-9]", value))
 
 
 def _media_type_for_key(key: str) -> str:
@@ -222,7 +206,7 @@ def _media_type_for_key(key: str) -> str:
 
 def _validate_safe_filename(filename: str) -> None:
     """Validate that a filename is safe and does not allow path traversal.
-    
+
     Raises OutputError if the filename:
     - Is an absolute path (POSIX or Windows)
     - Contains path separators (/ or \\)
@@ -234,31 +218,31 @@ def _validate_safe_filename(filename: str) -> None:
     """
     if not filename:
         return
-    
+
     # Check for null bytes
-    if '\x00' in filename:
+    if "\x00" in filename:
         raise OutputError("output.filename contains null bytes")
-    
+
     # Check for Windows drive letters (C:, D:, etc.) at the start
     # Must check this before path separator check since drive letters contain :
-    if len(filename) >= 2 and filename[1] == ':':
+    if len(filename) >= 2 and filename[1] == ":":
         raise OutputError("output.filename must not contain drive letters")
-    
+
     # Check for UNC paths (\server/share or //server/share)
     # Must check before absolute path check since \\ starts with \
-    if filename.startswith('\\\\') or filename.startswith('//'):
+    if filename.startswith("\\\\") or filename.startswith("//"):
         raise OutputError("output.filename must not contain UNC paths")
-    
+
     # Check for absolute paths (POSIX and Windows)
-    if filename.startswith('/') or filename.startswith('\\'):
+    if filename.startswith("/") or filename.startswith("\\"):
         raise OutputError("output.filename must be a relative path")
-    
+
     # Check for path traversal patterns
-    if '..' in filename:
+    if ".." in filename:
         raise OutputError("output.filename must not contain path traversal sequences")
-    
+
     # Check for path separators
-    if '/' in filename or '\\' in filename:
+    if "/" in filename or "\\" in filename:
         raise OutputError("output.filename must not contain path separators")
 
 
@@ -273,14 +257,14 @@ def _choose_path(
     overwrite: bool,
 ) -> Path:
     extension = extension_for_content_type(content_type)
-    
+
     # NEW: Validate filename safety before path construction
     if filename:
         _validate_safe_filename(filename)
-    
+
     # Resolve directory to absolute path
     directory = directory.expanduser().resolve()
-    
+
     if filename:
         candidate = directory / filename
         # VMS-012 FIX: Replace incompatible extension if user provided one
@@ -313,7 +297,7 @@ def _choose_path(
         if total > 1:
             stem += f"-{index}"
         candidate = directory / f"{stem}{extension}"
-    
+
     # NEW: Resolve candidate and verify it stays within directory
     resolved_candidate = candidate.resolve()
     if not resolved_candidate.parent.samefile(directory):
@@ -321,10 +305,10 @@ def _choose_path(
             f"output.filename resolves to {resolved_candidate} which is outside "
             f"the output directory {directory}"
         )
-    
+
     # Use resolved candidate for existence checks
     candidate = resolved_candidate
-    
+
     # VMS-014 FIX: Use UUID-based names to avoid race conditions
     # Check existence and handle collision, but use UUID for guaranteed uniqueness
     if candidate.exists() and not overwrite:
