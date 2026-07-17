@@ -1,250 +1,426 @@
 # Venice Media Skill
 
-A public-ready, host-neutral Agent Skill and Python bridge that lets an existing AI CLI use the Venice API for media generation **without replacing the original host agent**.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-ff69b4.svg)](https://github.com/astral-sh/ruff)
+[![Type Checked: mypy](https://img.shields.io/badge/type%20checked-mypy-3078C6.svg)](https://mypy-lang.org/)
+[![Tests: pytest](https://img.shields.io/badge/tests-pytest-0A9EDC.svg)](https://docs.pytest.org/)
 
-The host agent—Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or another shell-capable interface—continues to reason, ask questions, and manage the conversation. This package provides a narrow subprocess boundary for:
+---
 
-- Image generation
-- Image editing and multi-edit
-- Image upscaling
-- Background removal
-- Video generation, retrieval, editing, extension, and stitching through supported Venice models
-- Text-to-speech
-- Music and generated audio
-- Audio transcription
-- Live model discovery and model-aware parameter planning
-- Quotes, queue persistence, polling, artifact storage, and metadata sidecars
+**Venice Media Skill** is a public-ready, host-neutral Agent Skill and Python bridge that lets an existing AI CLI use the Venice API for media generation **without replacing the original host agent**.
 
-## Design goals
+The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or another shell-capable interface&mdash;continues to reason, ask questions, and manage the conversation. This package provides a narrow subprocess boundary for:
 
-- **Preserve the original agent.** Venice is used as a media API, not as a replacement chat model.
-- **Discover capabilities live.** The bridge queries `GET /models`; it does not rely on a stale hard-coded model matrix.
-- **Agent-readable I/O.** Commands emit structured JSON to stdout and errors to stderr.
-- **Safe credential boundary.** `VENICE_API_KEY` is read only from the process environment and is never written to manifests or config files.
-- **Recover queued jobs.** Video and generated-audio queue IDs are stored locally for later retrieval.
-- **Prevent duplicate spend.** Timeouts return a resumable queue ID instead of automatically submitting another generation.
-- **Quote before queued generation.** Video and generated audio can return a quote and require explicit approval before queueing.
-- **Model-aware clarification.** The host asks only questions relevant to the selected model's current constraints.
-- **Auditable outputs.** Every media artifact can receive a JSON metadata sidecar with the model, prompt, parameters, queue ID, and redacted request.
+- 🎨 **Image generation, editing, multi-edit, and upscaling**
+- 🪟 **Background removal**
+- 🎬 **Video generation, retrieval, editing, extension, and stitching** through supported Venice models
+- 🔊 **Text-to-speech (TTS)**
+- 🎵 **Music and generated audio**
+- 🎙️ **Audio transcription**
+- 🔍 **Live model discovery and model-aware parameter planning**
+- ✅ **Quotes, queue persistence, polling, artifact storage, and metadata sidecars**
 
-## Defaults
+---
 
-For native Venice image generation, the bridge injects:
+## ✨ Features
 
-```json
-{
-  "safe_mode": false,
-  "hide_watermark": true
-}
-```
+| Feature | Description |
+|---------|-------------|
+| **Host-Neutral** | Works with any shell-capable AI agent |
+| **Live Model Discovery** | Queries `GET /models` dynamically, no hard-coded catalog |
+| **Agent-Readable I/O** | Commands emit structured JSON to stdout, errors to stderr |
+| **Safe Credential Boundary** | `VENICE_API_KEY` read only from environment, never written to manifests |
+| **Recover Queued Jobs** | Video and audio queue IDs stored locally for retrieval |
+| **Prevent Duplicate Spend** | Timeouts return resumable queue IDs, no auto-resubmission |
+| **Quote Before Queued Generation** | Video/audio can return quotes requiring explicit approval |
+| **Model-Aware Clarification** | Host asks only relevant questions based on selected model constraints |
+| **Auditable Outputs** | Every artifact receives JSON metadata sidecar with model, prompt, parameters |
 
-For image edit and multi-edit, it injects `safe_mode=false`. Venice may ignore watermark settings for certain content. These settings do not override provider-level or platform-level request rejection.
+---
 
-Seedance face-media consent is never inferred or auto-approved. When Venice returns `409 needs_consent`, the CLI emits a structured `consent_required` result containing the exact policy text. The host must show that text and obtain an explicit legal attestation before resubmitting.
+## 📋 Table of Contents
 
-## Repository layout
+- [🚀 Quick Start](#-quick-start)
+- [📦 Installation](#-installation)
+- [🔑 Configuration](#-configuration)
+- [🎯 Usage](#-usage)
+- [📚 Documentation](#-documentation)
+- [🏗️ Architecture](#-architecture)
+- [🔒 Security](#-security)
+- [🤝 Contributing](#-contributing)
+- [📜 License](#-license)
+- [📞 Support](#-support)
 
-```text
-venice-media-skill/
-├── skills/venice-media/          # Host-neutral Agent Skill
-├── adapters/
-│   ├── kimi-code/                # Native Kimi Code skill/plugin package
-│   └── generic/                  # Persistent-instruction fallback
-├── src/venice_media_skill/       # Python bridge
-├── references/
-│   ├── venice-openapi.yaml       # Bundled Venice Swagger/OpenAPI snapshot
-│   ├── venice-api-llms.md        # Venice documentation index snapshot
-│   ├── seedance-2-0-api-guide.md
-│   ├── seedance-face-consent-api-guide.md
-│   └── request.schema.json
-├── examples/requests/            # Complete request manifests
-├── docs/                         # Architecture, security, integrations, workflows
-├── tests/                        # Unit and CLI contract tests
-├── scripts/                      # Cross-platform installers and validation
-└── .github/                      # CI, releases, issue templates, Dependabot
-```
+---
 
-## Requirements
+## 🚀 Quick Start
 
-- Python 3.11 or newer
-- A Venice API key
-- A host agent able to execute shell commands
-- macOS, Linux, WSL, or Windows PowerShell
+### Prerequisites
 
-## Install
+- **Python** 3.11 or newer
+- **Venice API Key** - [Get yours from Venice](https://api.venice.ai)
+- **Host Agent** - Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or any shell-capable interface
+- **Operating System** - macOS, Linux, WSL, or Windows PowerShell
 
-### macOS / Linux / WSL
+### 1. Install the Package
 
 ```bash
+# Clone the repository
 git clone https://github.com/spearchucker667/venice-media-skill.git
 cd venice-media-skill
+
+# Install in editable mode
+python -m pip install -e .
+```
+
+### 2. Configure API Key
+
+Set the environment variable in your shell:
+
+**macOS / Linux / WSL:**
+```bash
+export VENICE_API_KEY='your-venice-api-key-here'
+```
+
+**Windows PowerShell:**
+```powershell
+$env:VENICE_API_KEY = 'your-venice-api-key-here'
+```
+
+> ⚠️ **Security Note:** Store credentials securely using your OS keychain or credential manager. Never commit API keys to version control.
+
+### 3. Verify Installation
+
+```bash
+venice-media --version
+venice-media doctor --online
+```
+
+---
+
+## 📦 Installation
+
+### Development Installation
+
+```bash
+# Create virtual environment
+python -m venv .venv
+
+# Activate it (macOS/Linux: source .venv/bin/activate, Windows: .\.venv\Scripts\activate)
+source .venv/bin/activate
+
+# Install with dev dependencies
+python -m pip install --upgrade pip
+python -m pip install -e '.[dev]'
+
+# Install the skill for your agent
+venice-media install-skill --host kimi --scope user
+```
+
+### Script-Based Installation
+
+**macOS / Linux / WSL:**
+```bash
 ./scripts/install.sh --host kimi --scope user
 ```
 
-The installer creates an isolated virtual environment at:
-
-```text
-~/.local/share/venice-media-skill/venv
-```
-
-It installs a launcher at `~/.local/bin/venice-media` and copies the complete Skill—including the request schema, Venice capability index, full pinned Swagger/OpenAPI snapshot, and Seedance workflow references—to:
-
-```text
-~/.agents/skills/venice-media/
-~/.kimi-code/skills/venice-media/   # when --host kimi is selected
-```
-
-Ensure `~/.local/bin` is on `PATH`.
-
-### Windows PowerShell
-
+**Windows PowerShell:**
 ```powershell
-git clone https://github.com/spearchucker667/venice-media-skill.git
-Set-Location .\venice-media-skill
 .\scripts\install.ps1 -HostName kimi -Scope user
 ```
 
-### Install from a release wheel
+This creates an isolated virtual environment at `~/.local/share/venice-media-skill/venv` and installs a launcher at `~/.local/bin/venice-media`.
+
+> Ensure `~/.local/bin` is on your `PATH`.
+
+---
+
+## 🔑 Configuration
+
+### Environment Variables
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `VENICE_API_KEY` | ✅ Yes | Your Venice API key | None |
+| `VENICE_MEDIA_OUTPUT_DIR` | ❌ No | Custom output directory | `./venice-media-output` |
+| `VENICE_API_BASE` | ❌ No | Custom API base URL | `https://api.venice.ai/api/v1` |
+
+### Configuration Directories
+
+- **Cache:** `~/.cache/venice-media-skill` (models cache, 1-hour TTL)
+- **Config:** `~/.config/venice-media-skill` (configuration files)
+- **State:** `~/.local/state/venice-media-skill` (queue records)
+- **Output:** `./venice-media-output` (generated artifacts and metadata)
+
+---
+
+## 🎯 Usage
+
+### CLI Commands
+
+#### Health Check
 
 ```bash
-python -m pip install venice_media_skill-0.1.0-py3-none-any.whl
-venice-media install-skill --host kimi --scope user
-```
-
-The wheel embeds the complete Skill and pinned API references. The `install-skill` command can also install project-local discovery directories with `--scope project --project-dir PATH`.
-
-### Development install
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
-venice-media install-skill --host kimi --scope user
-```
-
-## Configure the API key
-
-Export the key in the shell that launches the host agent:
-
-```bash
-export VENICE_API_KEY='your-key'
-```
-
-For Zsh, place the export in a secure credential loader or keychain-backed shell integration—not directly in a public dotfile or repository.
-
-PowerShell session:
-
-```powershell
-$env:VENICE_API_KEY = 'your-key'
-```
-
-Verify:
-
-```bash
-venice-media doctor --online
-```
-
-## Kimi Code usage
-
-Kimi Code discovers directory-form skills from `~/.kimi-code/skills/` and `~/.agents/skills/`. Start a new Kimi session after installation, then invoke:
-
-```text
-/skill:venice-media using Venice, create an image of a sunset
-```
-
-Kimi remains the active agent. It calls `venice-media plan image.generate`, asks a grouped model-aware clarification, writes a request manifest, and executes the bridge.
-
-A typical clarification may be:
-
-> Which Venice image model should be used, and do you want the model defaults or custom dimensions/aspect ratio, CFG, negative prompt, steps, seed, variants, and output format?
-
-The exact questions depend on the selected model's current `/models` constraints.
-
-## CLI contract
-
-### Health check
-
-```bash
+# Check local configuration
 venice-media doctor
+
+# Check connectivity to Venice API
 venice-media doctor --online
 ```
 
-### Discover models
+#### Discover Models
 
 ```bash
+# List all models
+venice-media models
+
+# List image generation models
 venice-media models --type image
-venice-media models --type video --refresh
+
+# List TTS models
 venice-media models --type tts
-venice-media models --type music
+
+# List video models
+venice-media models --type video
+
+# Refresh model cache
+venice-media models --type image --refresh
 ```
 
-### Plan questions
+#### Model-Aware Planning
 
 ```bash
-venice-media plan image.generate --prompt 'A sunset over the Pacific'
-venice-media plan image.generate --model 'MODEL_ID' --prompt 'A sunset over the Pacific'
-venice-media plan video.generate --model 'MODEL_ID' --prompt 'A slow aerial reveal at dusk'
+# Get questions for image generation
+venice-media plan image.generate
+
+# Get model-specific questions
+venice-media plan image.generate --model venice-sd35
+
+# Get questions for video generation
+venice-media plan video.generate --model MODEL_ID
 ```
 
-### Validate a request without spending credits
-
-Set `execution.dry_run` to `true`, then:
+#### Execute Requests
 
 ```bash
+# Dry run (no API call, shows payload)
 venice-media run examples/requests/image-generate.json
+
+# Execute with actual API call
+venice-media run my-request.json
 ```
 
-The result includes the endpoint and exact redacted API payload.
-
-### Execute a request
+#### Schema
 
 ```bash
-venice-media run request.json
+# View request manifest JSON Schema
+venice-media schema
+
+# Save to file
+venice-media schema --output my-schema.json
 ```
 
-Status values:
-
-| Status | Meaning |
-|---|---|
-| `completed` | Media or transcript was written locally. |
-| `approval_required` | A quote was obtained; set `confirmed_cost=true` only after approval. |
-| `queued` | Job was queued without waiting. Preserve the queue ID. |
-| `processing` | Retrieval found the job still running. |
-| `timed_out` | Local wait ended; retrieve the existing queue ID later. |
-| `consent_required` | Seedance face-media policy text must be explicitly accepted. |
-| `dry_run` | No API call was made. |
-| `error` | Validation, local I/O, or Venice API failure. |
-
-### Inspect queued jobs
+#### Queue Management
 
 ```bash
+# List queued jobs
 venice-media jobs list
+
+# Get job details
 venice-media jobs get QUEUE_ID
 ```
 
-Queue records are stored in the platform-specific state directory returned by `venice-media doctor`.
+#### Validation
 
-## Request manifest
+```bash
+# Validate OpenAPI snapshot
+venice-media validate-openapi
+
+# Full validation suite
+./scripts/validate.sh
+```
+
+---
+
+## 📚 Documentation
+
+### Core Guides
+
+- [🏗️ **Architecture**](docs/architecture.md) - System design and trust zones
+- [🤖 **Agent Workflow**](docs/agent-workflow.md) - How agents interact with the bridge
+- [🎬 **Media Generation Guide**](docs/media-generation-guide.md) - Complete media workflow documentation
+- [🔌 **Host Integrations**](docs/host-integrations.md) - Kimi Code, Codex, and other agent setup
+- [🔒 **Security & Privacy**](docs/security-and-privacy.md) - Security invariants and best practices
+- [🐛 **Troubleshooting**](docs/troubleshooting.md) - Common issues and solutions
+- [🚀 **Releasing**](docs/releasing.md) - Release process and automation
+
+### Reference Materials
+
+- [📄 **Request Schema**](references/request.schema.json) - JSON Schema for request manifests
+- [📖 **Venice API Index**](references/venice-api-llms.md) - Venice API documentation snapshot
+- [🎥 **Seedance 2.0 API Guide**](references/seedance-2-0-api-guide.md) - Video generation workflows
+- [✅ **Seedance Face Consent Guide**](references/seedance-face-consent-api-guide.md) - Face media consent requirements
+- [📡 **Venice OpenAPI**](references/venice-openapi.yaml) - Complete API specification snapshot
+
+### Root Documentation
+
+- [📜 **CHANGELOG**](CHANGELOG.md) - Version history and changes
+- [🤝 **CODE OF CONDUCT**](CODE_OF_CONDUCT.md) - Contribution standards
+- [📝 **CONTRIBUTING**](CONTRIBUTING.md) - Development and PR guidelines
+- [🛡️ **SECURITY**](SECURITY.md) - Security policy and reporting
+- [📄 **LICENSE**](LICENSE) - MIT License
+- [📋 **THIRD PARTY NOTICES**](THIRD_PARTY_NOTICES.md) - Third-party dependencies and attributions
+
+---
+
+## 🏗️ Architecture
+
+The Venice Media Skill maintains a clear separation of concerns:
+
+```
+┌─────────────────────┐
+│     User            │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────────────────────┐
+│  Existing Host Agent (Kimi, Codex, ...) │
+│  - Reasons about user intent          │
+│  - Asks clarifying questions          │
+│  - Manages conversation               │
+└──────────────────────┬────────────────┘
+                        ↓
+┌─────────────────────────────────────┐
+│  Venice Media Skill Bridge            │
+│  - Validates request manifests        │
+│  - Loads VENICE_API_KEY from env      │
+│  - Queries live model metadata        │
+│  - Calls Venice REST endpoints        │
+│  - Manages queue state               │
+│  - Writes artifacts & metadata        │
+└──────────────────────┬────────────────┘
+                        ↓
+┌─────────────────────────────────────┐
+│  Venice API                           │
+│  - Media generation endpoints         │
+│  - Model catalog                      │
+│  - Queue management                   │
+└─────────────────────────────────────┘
+```
+
+**Key Principle:** The host agent remains the conversational and reasoning authority. The bridge has no LLM loop and does not call Venice chat completions.
+
+For details, see [Architecture Documentation](docs/architecture.md).
+
+---
+
+## 🔒 Security
+
+### Security Invariants
+
+The bridge deliberately does **NOT**:
+
+- ❌ Store API keys in files or configuration
+- ❌ Read arbitrary directories without explicit paths
+- ❌ Upload files not explicitly named in requests
+- ❌ Forward Venice auth headers to third-party hosts
+- ❌ Automatically retry paid generation jobs
+- ❌ Auto-attest rights to human likenesses
+- ❌ Replace provider errors with fabricated success
+
+### Safe Practices
+
+- ✅ API keys come **only** from the environment
+- ✅ Credentials are **never** forwarded to pre-signed download hosts
+- ✅ Explicit local paths are **required** for uploads
+- ✅ Seedance consent **requires** user confirmation
+- ✅ Timed-out jobs are **retrieved**, not automatically resubmitted
+- ✅ API and media output are treated as **untrusted data**
+
+For complete security documentation, see:
+- [🛡️ Security Policy](SECURITY.md)
+- [🔒 Security & Privacy Guide](docs/security-and-privacy.md)
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please follow our [Contributing Guidelines](CONTRIBUTING.md).
+
+### Development Setup
+
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+python -m pip install --upgrade pip
+python -m pip install -e '.[dev]'
+
+# Run validation suite
+./scripts/validate.sh
+```
+
+### Pull Request Checklist
+
+- [ ] Problem statement included
+- [ ] Evidence or API reference provided
+- [ ] Behavior before and after described
+- [ ] Tests added or changed
+- [ ] Security/privacy impact assessed
+- [ ] Manual validation commands included
+
+For complete guidelines, see [📝 CONTRIBUTING](CONTRIBUTING.md).
+
+---
+
+## 📜 License
+
+This project is licensed under the **MIT License** - see [LICENSE](LICENSE) for details.
+
+> Venice API documentation and trademarks remain the property of their respective owners. See [THIRD PARTY NOTICES](THIRD_PARTY_NOTICES.md).
+
+---
+
+## 📞 Support
+
+### Reporting Issues
+
+- **Bugs & Feature Requests:** [Open an Issue](https://github.com/spearchucker667/venice-media-skill/issues)
+- **Security Vulnerabilities:** See [Security Policy](SECURITY.md) for private reporting
+
+### Getting Help
+
+- **Documentation:** [All Docs](docs/)
+- **Examples:** [Request Examples](examples/requests/)
+- **Schema:** [Request Schema](references/request.schema.json)
+
+### Community
+
+- **Discussions:** [GitHub Discussions](https://github.com/spearchucker667/venice-media-skill/discussions)
+- **Contributing:** [How to Contribute](CONTRIBUTING.md)
+
+---
+
+## 🎯 Request Manifest Example
 
 ```json
 {
   "version": "1",
   "operation": "image.generate",
-  "model": "MODEL_FROM_LIVE_CATALOG",
+  "model": "venice-sd35",
   "prompt": "A cinematic sunset over a glass-calm ocean",
   "parameters": {
     "width": 1024,
     "height": 1024,
     "negative_prompt": "text, logos, artifacts",
-    "variants": 1,
     "format": "webp"
   },
   "inputs": {},
   "output": {
     "directory": "./venice-media-output",
     "filename": "sunset.webp",
-    "overwrite": false,
     "write_metadata": true
   },
   "execution": {
@@ -252,9 +428,7 @@ Queue records are stored in the platform-specific state directory returned by `v
     "quote_first": false,
     "confirmed_cost": false,
     "wait": true,
-    "poll_interval_seconds": 5,
-    "timeout_seconds": 900,
-    "delete_remote_on_completion": false
+    "timeout_seconds": 900
   },
   "attestations": {
     "seedance_face_consent": false
@@ -262,94 +436,20 @@ Queue records are stored in the platform-specific state directory returned by `v
 }
 ```
 
-The complete JSON Schema is at `references/request.schema.json` and can be emitted with:
+> **Note:** Always use `dry_run: true` for testing without incurring costs. Use `quote_first: true` for queued operations (video/audio) to get cost estimates before execution.
 
-```bash
-venice-media schema
-```
+---
 
-## Output and metadata
+## 🏆 Acknowledgments
 
-Default artifacts are written to `./venice-media-output/`. Override with:
+- **Venice AI** for the powerful media generation API
+- **Contributors** - See [GitHub Contributors](https://github.com/spearchucker667/venice-media-skill/graphs/contributors)
+- **Open Source Community** for the tools and libraries we depend on
 
-```bash
-export VENICE_MEDIA_OUTPUT_DIR="$HOME/Media/Venice"
-```
+---
 
-Each generated artifact can receive a sidecar such as:
+<div align="center">
 
-```text
-sunset.webp
-sunset.webp.json
-```
+✨ **Venice Media Skill** | [📖 Documentation](docs/) | [🐛 Issues](https://github.com/spearchucker667/venice-media-skill/issues) | [🤝 Contributing](CONTRIBUTING.md) | [📜 License](LICENSE)
 
-The sidecar does not contain the API key. It records reproducibility and debugging information, including ignored or rejected parameters when surfaced by the API.
-
-## Seedance 2.0
-
-The package includes dedicated references for:
-
-- Text-to-video
-- Image-to-video
-- Reference-to-video
-- Reference, Edit, Extend, and Stitch prompt routing
-- Reference images, videos, and audio donors
-- Face-media consent, deduplication, and revocation
-
-Seedance workflows are selected by canonical prompt syntax, not by a separate `workflow` field. See [`docs/media-generation-guide.md`](docs/media-generation-guide.md).
-
-## Security boundary
-
-The bridge deliberately does not:
-
-- Store API keys
-- Read arbitrary directories
-- Upload files that were not explicitly named in a request
-- Forward the Venice authorization header to pre-signed third-party media URLs
-- Automatically retry by submitting duplicate paid generation jobs
-- Auto-attest rights to human likenesses
-- Replace provider error messages with fabricated success
-
-See [`docs/security-and-privacy.md`](docs/security-and-privacy.md) and [`SECURITY.md`](SECURITY.md).
-
-## Validation
-
-```bash
-./scripts/validate.sh
-```
-
-Equivalent commands:
-
-```bash
-python -m compileall -q src
-ruff check .
-ruff format --check .
-mypy src
-pytest --cov=venice_media_skill --cov-report=term-missing
-python -m build
-venice-media validate-openapi references/venice-openapi.yaml
-```
-
-## API snapshot provenance
-
-The bundled OpenAPI file records:
-
-- Source: `https://api.venice.ai/doc/api/swagger.yaml`
-- Retrieved: `2026-07-11`
-- API content version: `20260709.204640`
-
-Runtime model selection still uses live `GET /models`. Refresh the snapshot before releases with an authorized and reviewed update process; do not silently overwrite it during normal CLI execution.
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [Agent workflow](docs/agent-workflow.md)
-- [Media generation guide](docs/media-generation-guide.md)
-- [Host integrations](docs/host-integrations.md)
-- [Security and privacy](docs/security-and-privacy.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Release process](docs/releasing.md)
-
-## License
-
-MIT. Venice API documentation and trademarks remain the property of their respective owners. See `THIRD_PARTY_NOTICES.md`.
+</div>
