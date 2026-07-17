@@ -94,7 +94,7 @@ class VeniceClient:
         with httpx.Client(
             timeout=self._timeout_seconds,
             follow_redirects=True,
-            limits={"max_keepalive_connections": 1, "max_connections": 1},
+            limits=httpx.Limits(max_keepalive_connections=1, max_connections=1),
         ) as http_client:
             try:
                 response = http_client.get(
@@ -107,8 +107,8 @@ class VeniceClient:
                 ) from exc
 
             # Validate redirect URL if redirect occurred
-            if response.url != url:
-                self._validate_url_safe(response.url)
+            if str(response.url) != url:
+                self._validate_url_safe(str(response.url))
 
             # Check for success
             if not response.is_success:
