@@ -1,0 +1,32 @@
+{
+  "version": "1",
+  "operation": "image.generate",
+  "model": "REPLACE_WITH_LIVE_IMAGE_MODEL_ID",
+  "prompt": "A cinematic sunset over a glass-calm ocean, warm volumetric light, distant clouds, natural color grading",
+  "parameters": {
+    "width": 1024,
+    "height": 1024,
+    "negative_prompt": "text, watermark, logo, compression artifacts",
+    "variants": 1,
+    "format": "webp"
+  },
+  "inputs": {},
+  "output": {
+    "directory": "./venice-media-output",
+    "filename": "sunset.webp",
+    "overwrite": false,
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true,
+    "quote_first": false,
+    "confirmed_cost": false,
+    "wait": true,
+    "poll_interval_seconds": 5,
+    "timeout_seconds": 900,
+    "delete_remote_on_completion": false
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}

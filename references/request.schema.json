@@ -1,0 +1,122 @@
+{
+  "$id": "https://raw.githubusercontent.com/spearchucker667/venice-media-skill/main/references/request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attestations": {
+      "additionalProperties": false,
+      "properties": {
+        "seedance_face_consent": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "execution": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmed_cost": {
+          "default": false,
+          "type": "boolean"
+        },
+        "delete_remote_on_completion": {
+          "default": false,
+          "type": "boolean"
+        },
+        "dry_run": {
+          "default": false,
+          "type": "boolean"
+        },
+        "poll_interval_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "quote_first": {
+          "default": false,
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "wait": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "inputs": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "operation": {
+      "enum": [
+        "audio.generate",
+        "audio.retrieve",
+        "audio.transcribe",
+        "audio.tts",
+        "image.background_remove",
+        "image.edit",
+        "image.generate",
+        "image.multi_edit",
+        "image.upscale",
+        "video.generate",
+        "video.retrieve"
+      ],
+      "type": "string"
+    },
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overwrite": {
+          "default": false,
+          "type": "boolean"
+        },
+        "write_metadata": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "const": "1",
+      "default": "1"
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "title": "Venice Media Skill request manifest",
+  "type": "object"
+}

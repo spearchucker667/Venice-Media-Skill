@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible defect in the CLI, skill, installer, or documentation.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, bearer tokens, face-consent media, or private prompts.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host interface
+      options: [Kimi Code, Codex CLI, Claude Code, Gemini CLI, OpenCode, Other]
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and Python version
+      placeholder: macOS 27 arm64, Python 3.12.4
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include a redacted manifest and exact command.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted output
+    validations:
+      required: true

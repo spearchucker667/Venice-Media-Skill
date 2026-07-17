@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Credentials and local config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime state and media
+.venice-media/
+venice-media-output/
+*.mp3
+*.wav
+*.flac
+*.aac
+*.opus
+*.pcm
+*.mp4
+*.mov
+*.webm
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

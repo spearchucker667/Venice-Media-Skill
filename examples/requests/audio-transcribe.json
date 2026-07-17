@@ -1,0 +1,24 @@
+{
+  "version": "1",
+  "operation": "audio.transcribe",
+  "model": "REPLACE_WITH_LIVE_ASR_MODEL_ID",
+  "parameters": {
+    "response_format": "json",
+    "timestamps": true,
+    "language": "en"
+  },
+  "inputs": {
+    "audio": "/absolute/path/to/input.mp3"
+  },
+  "output": {
+    "directory": "./venice-media-output",
+    "filename": "transcript.json",
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}

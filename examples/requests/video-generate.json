@@ -1,0 +1,32 @@
+{
+  "version": "1",
+  "operation": "video.generate",
+  "model": "REPLACE_WITH_LIVE_VIDEO_MODEL_ID",
+  "prompt": "A slow aerial reveal over a coastal city at sunset, smooth forward camera movement, realistic atmospheric haze, natural ambient audio",
+  "parameters": {
+    "duration": "5s",
+    "aspect_ratio": "16:9",
+    "resolution": "720p",
+    "audio": true,
+    "negative_prompt": "flicker, warped geometry, text, logo"
+  },
+  "inputs": {},
+  "output": {
+    "directory": "./venice-media-output",
+    "filename": "coastal-sunset.mp4",
+    "overwrite": false,
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true,
+    "quote_first": true,
+    "confirmed_cost": false,
+    "wait": true,
+    "poll_interval_seconds": 5,
+    "timeout_seconds": 1200,
+    "delete_remote_on_completion": false
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}

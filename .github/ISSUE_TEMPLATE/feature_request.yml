@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a host adapter, media workflow, or bridge enhancement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What host or Venice workflow cannot be completed cleanly today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Suggested CLI or manifest contract
+      description: Include example JSON without secrets.

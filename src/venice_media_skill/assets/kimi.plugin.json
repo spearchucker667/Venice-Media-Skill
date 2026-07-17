@@ -1,0 +1,9 @@
+{
+  "name": "venice-media",
+  "version": "0.1.0",
+  "description": "Use Venice media APIs from Kimi Code while retaining Kimi as the host agent.",
+  "skills": [
+    "./venice-media"
+  ],
+  "skillInstructions": "Use the installed venice-media executable for API operations; never expose VENICE_API_KEY. Load the skill only when the user explicitly requests Venice or invokes /skill:venice-media."
+}

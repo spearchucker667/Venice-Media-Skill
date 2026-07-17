@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "operation": "audio.tts",
+  "model": "REPLACE_WITH_LIVE_TTS_MODEL_ID",
+  "prompt": "The sun is setting beyond the horizon, and the city is beginning to glow.",
+  "parameters": {
+    "voice": "REPLACE_WITH_MODEL_COMPATIBLE_VOICE",
+    "response_format": "mp3",
+    "speed": 1.0
+  },
+  "inputs": {},
+  "output": {
+    "directory": "./venice-media-output",
+    "filename": "narration.mp3",
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "version": "1",
+  "operation": "video.generate",
+  "model": "seedance-2-0-reference-to-video",
+  "prompt": "Refer to <Subject 1> in <Image 1> and the camera scene in <Video 1> to generate a cinematic 5-second shot of the same subject walking through a lantern-lit market at dusk.",
+  "parameters": {
+    "duration": "5s",
+    "aspect_ratio": "9:16",
+    "resolution": "1080p",
+    "audio": true
+  },
+  "inputs": {
+    "reference_images": [
+      "/absolute/path/to/subject.png"
+    ],
+    "reference_videos": [
+      "/absolute/path/to/camera-reference.mp4"
+    ]
+  },
+  "output": {
+    "directory": "./venice-media-output",
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true,
+    "quote_first": true,
+    "confirmed_cost": false,
+    "wait": true,
+    "poll_interval_seconds": 5,
+    "timeout_seconds": 1800,
+    "delete_remote_on_completion": false
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}

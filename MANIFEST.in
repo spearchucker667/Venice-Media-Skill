@@ -1,0 +1,9 @@
+include README.md LICENSE CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md THIRD_PARTY_NOTICES.md AGENTS.md
+recursive-include references *
+recursive-include skills *
+recursive-include adapters *
+recursive-include docs *
+recursive-include examples *
+recursive-include scripts *
+recursive-include .github *
+recursive-include tests *.py

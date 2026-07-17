@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m compileall -q src
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m mypy src
+      - run: python -m pytest --cov=venice_media_skill --cov-report=term-missing
+      - run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
+      - run: python -m build
+
+  cross-platform-smoke:
+    name: Smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - run: python -m venice_media_skill schema
+      - run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
+      - run: python -m venice_media_skill doctor
+        env:
+          VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
+          VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media/cache
+          VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media/state
+          VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media/output

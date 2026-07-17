@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/spearchucker667/venice-media-skill/security/advisories/new
+    about: Report credential exposure, arbitrary file access, command injection, or other security issues privately.
+  - name: Venice API support
+    url: https://docs.venice.ai
+    about: Use official Venice documentation for service availability, account, billing, or provider-policy questions.

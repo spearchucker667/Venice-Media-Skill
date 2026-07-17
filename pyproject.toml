@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "venice-media-skill"
+version = "0.1.0"
+description = "Host-neutral Agent Skill and Python bridge for Venice API image, video, TTS, music, editing, upscaling, and transcription workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Venice Media Skill contributors" }
+]
+keywords = ["venice", "agent-skill", "ai-cli", "image-generation", "video-generation", "tts"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Multimedia :: Video",
+]
+dependencies = [
+  "httpx>=0.28.1,<1",
+  "platformdirs>=4.3.6,<5",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2.post1",
+  "mypy>=1.15.0",
+  "pytest>=8.3.5",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.11.0",
+  "types-PyYAML>=6.0.12.20241230",
+]
+
+[project.scripts]
+venice-media = "venice_media_skill.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/spearchucker667/venice-media-skill#readme"
+Issues = "https://github.com/spearchucker667/venice-media-skill/issues"
+Source = "https://github.com/spearchucker667/venice-media-skill"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/venice_media_skill"]
+artifacts = ["src/venice_media_skill/assets/**"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+packages = ["venice_media_skill"]
+
+[tool.coverage.run]
+branch = true
+source = ["venice_media_skill"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80

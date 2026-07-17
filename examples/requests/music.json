@@ -1,0 +1,27 @@
+{
+  "version": "1",
+  "operation": "audio.generate",
+  "model": "REPLACE_WITH_LIVE_MUSIC_MODEL_ID",
+  "prompt": "A slow cinematic ambient track with warm analog synths, distant piano, and a restrained emotional build",
+  "parameters": {
+    "duration_seconds": 30,
+    "force_instrumental": true
+  },
+  "inputs": {},
+  "output": {
+    "directory": "./venice-media-output",
+    "filename": "ambient-score.mp3",
+    "write_metadata": true
+  },
+  "execution": {
+    "dry_run": true,
+    "quote_first": true,
+    "confirmed_cost": false,
+    "wait": true,
+    "poll_interval_seconds": 5,
+    "timeout_seconds": 900
+  },
+  "attestations": {
+    "seedance_face_consent": false
+  }
+}
