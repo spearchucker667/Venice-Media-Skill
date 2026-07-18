@@ -97,27 +97,57 @@ class Settings:
 
 
 def _validate_safe_path(path: Path, name: str) -> None:
-    """Validate that a path is safe to use.
+    """Validate that a configured application directory path is safe to use.
 
-    - Must be absolute or relative without traversal
-    - Must not contain null bytes
-    - Must not be a UNC path or drive-letter path on Windows
+    Accepts:
+    - Absolute POSIX paths: /home/user/.config/venice-media-skill
+    - Absolute Windows paths with drive letters: C:\\Users\\name\\AppData\\Local\\...
+    - Paths not yet created on disk (resolved with strict=False)
+
+    Rejects:
+    - Null bytes in the path string
+    - UNC paths (\\\\server\\share or //server/share)
+    - Filesystem roots (/, C:\\, D:\\, etc.)
+    - POSIX protected system directories (/etc, /usr, /bin, /sbin, /lib, /lib64)
     """
     path_str = str(path)
     if "\x00" in path_str:
         raise ConfigurationError(f"{name} contains null bytes")
-    if len(path_str) >= 2 and path_str[1] == ":":
-        raise ConfigurationError(f"{name} must not contain drive letters: {path_str}")
+
+    # Check for UNC paths (starts with // or \\)
     if path_str.startswith("\\\\") or path_str.startswith("//"):
-        raise ConfigurationError(f"{name} must not contain UNC paths: {path_str}")
-    # Resolve and ensure it doesn't escape via symlinks
+        raise ConfigurationError(f"{name} must not be a UNC path: {path_str}")
+
+    # Resolve safely without requiring the path to already exist so that CI
+    # can supply valid temporary directories that have not been created yet.
     try:
-        resolved = path.expanduser().resolve()
-        # Ensure the resolved path is reasonable (not root, not system dirs)
-        if resolved == Path("/") or str(resolved).startswith("/etc") or str(resolved).startswith("/usr"):
-            raise ConfigurationError(f"{name} resolves to system directory: {resolved}")
+        resolved = path.expanduser().resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise ConfigurationError(f"{name} path invalid: {exc}") from exc
+
+    # Reject bare filesystem roots: Path("/"), Path("C:\\"), etc.
+    # resolved.anchor is a str (e.g. "/" or "C:\\"); wrap in Path to compare.
+    if resolved == Path(resolved.anchor):
+        raise ConfigurationError(f"{name} resolves to a filesystem root: {resolved}")
+
+    # On POSIX systems, reject writes into protected system directories.
+    # Use Path equality and the .parents chain — never str.startswith() — to
+    # avoid incorrectly matching unrelated paths like /usr-local or /usr_backup.
+    # Resolve each protected directory too so that symlinks (e.g. macOS
+    # /etc → /private/etc) are handled correctly.
+    if os.name != "nt":
+        protected = [
+            Path("/etc"),
+            Path("/usr"),
+            Path("/bin"),
+            Path("/sbin"),
+            Path("/lib"),
+            Path("/lib64"),
+        ]
+        for protected_dir in protected:
+            canonical = protected_dir.resolve(strict=False)
+            if resolved == canonical or canonical in resolved.parents:
+                raise ConfigurationError(f"{name} resolves to a protected system directory: {resolved}")
 
 
 def _load_json_config(path: Path) -> dict[str, Any]:
