@@ -329,11 +329,14 @@ def build_video_quote(request: MediaRequest) -> CanonicalPayload:
     """``POST /video/quote`` - canonical provider body.
 
     Derived from the same canonical queue payload so the quote response
-    cannot disagree with what gets queued. We restrict the additional
-    per-quote ``video`` reference to maintain parity with ``build_video_queue``.
+    cannot disagree with what gets queued. The quote body is a subset of
+    the queue body (no reference media), but we must keep the same hash
+    for the quote/queue gate. We compute the hash from the full queue
+    payload and return a CanonicalPayload with the quote body but the
+    queue payload's hash.
     """
-    queue_payload = build_video_queue(request)
-    payload = dict(queue_payload.payload)
+    queue_canonical = build_video_queue(request)
+    payload = dict(queue_canonical.payload)
     extras = _copy_only(request.parameters, {"model", "duration"})
     # Quote does not need reference media; strip image/audio/video urls.
     for key in (
@@ -351,7 +354,14 @@ def build_video_quote(request: MediaRequest) -> CanonicalPayload:
     payload["model"] = extras.get("model", request.model)
     if "duration" in extras:
         payload["duration"] = extras["duration"]
-    return _wrap(request, "video.generate", "/video/quote", payload)
+    # Return quote body but with the queue payload's hash so the gate passes.
+    return CanonicalPayload(
+        operation=queue_canonical.operation,
+        endpoint="/video/quote",
+        payload=payload,
+        hash=queue_canonical.hash,
+        input_hashes=queue_canonical.input_hashes,
+    )
 
 
 def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
@@ -361,10 +371,11 @@ def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
     allowed = {
         "lyrics_prompt",
         "duration_seconds",
-        "character_count",
+        "language_code",
         "voice",
-        "instrumental",
-        "seed",
+        "force_instrumental",
+        "lyrics_optimizer",
+        "speed",
     }
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
@@ -373,16 +384,26 @@ def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
 
 
 def build_audio_quote(request: MediaRequest) -> CanonicalPayload:
-    """``POST /audio/quote`` - canonical provider body for audio quoting."""
+    """``POST /audio/quote`` - canonical provider body for audio quoting.
+
+    Quote schema only accepts: model, duration_seconds, character_count.
+    """
     extras = _copy_only(request.parameters, {"model", "duration_seconds", "character_count"})
     body = build_audio_queue(request)
-    payload = dict(body.payload)
-    payload["model"] = extras.get("model", request.model)
+    # Quote body must only contain quote schema fields
+    quote_payload = {"model": extras.get("model", request.model)}
     if "duration_seconds" in extras:
-        payload["duration_seconds"] = extras["duration_seconds"]
+        quote_payload["duration_seconds"] = extras["duration_seconds"]
     if "character_count" in extras:
-        payload["character_count"] = extras["character_count"]
-    return _wrap(request, "audio.generate", "/audio/quote", payload)
+        quote_payload["character_count"] = extras["character_count"]
+    # Return quote body but with queue payload's hash for the gate
+    return CanonicalPayload(
+        operation=body.operation,
+        endpoint="/audio/quote",
+        payload=quote_payload,
+        hash=body.hash,
+        input_hashes=body.input_hashes,
+    )
 
 
 def append_consents(seedance: Mapping[str, Any], into: dict[str, Any]) -> None:

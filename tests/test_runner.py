@@ -18,6 +18,7 @@ from venice_media_skill.errors import (
 )
 from venice_media_skill.jobs import JobStore
 from venice_media_skill.output import ArtifactWriter
+from venice_media_skill.payloads import build_audio_queue, build_video_queue
 from venice_media_skill.request import MediaRequest
 from venice_media_skill.runner import MediaRunner
 
@@ -110,6 +111,30 @@ def _seed_job(tmp_path: Path, queue_id: str, *, media_type: str, model: str) -> 
         queue_id=queue_id,
         request={"operation": f"{media_type}.generate", "model": model, "prompt": "x"},
     )
+
+
+def _seed_quote(
+    tmp_path: Path,
+    request_obj: MediaRequest,
+    *,
+    quote_response: dict[str, Any] | None = None,
+) -> QuoteApprovalStore:
+    """Pre-record a quote approval matching ``request_obj``'s canonical hash."""
+    store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    if request_obj.operation.endswith("video.generate") or request_obj.operation == "video.generate":
+        canonical = build_video_queue(request_obj)
+    elif request_obj.operation == "audio.generate":
+        canonical = build_audio_queue(request_obj)
+    else:
+        raise RuntimeError(f"unsupported operation for quote seeding: {request_obj.operation}")
+    store.record(
+        operation=canonical.operation,
+        model=request_obj.model or "unknown",
+        payload_hash=canonical.hash,
+        quote_response=quote_response or {"quote": 1.0},
+        max_cost=10.0,
+    )
+    return store
 
 
 # ----- dispatch ------------------------------------------------------------
@@ -458,31 +483,39 @@ def test_video_quote_max_cost_enforced(tmp_path: Path) -> None:
 
 
 def test_queue_response_validation_missing_queue_id(tmp_path: Path) -> None:
+    req = request(
+        {
+            "operation": "video.generate",
+            "model": "m",
+            "prompt": "x",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": False, "wait": False},
+        }
+    )
     with pytest.raises(OutputError, match="queue_id"):
-        make_runner(tmp_path, FakeClient([ApiResponse(200, "application/json", {}, json_data={})])).run(
-            request(
-                {
-                    "operation": "video.generate",
-                    "model": "m",
-                    "prompt": "x",
-                    "parameters": {"duration": "5s"},
-                    "execution": {"quote_first": False, "wait": False},
-                }
-            )
-        )
+        make_runner(
+            tmp_path,
+            FakeClient(
+                [
+                    ApiResponse(200, "application/json", {}, json_data={"quote": 1.0}),
+                    ApiResponse(200, "application/json", {}, json_data={}),
+                ]
+            ),
+            quote_store=_seed_quote(tmp_path, req),
+        ).run(req)
 
 
 def test_video_queue_polls_then_save_binary(tmp_path: Path) -> None:
     """Each call to ``runner.run`` creates a fresh ``MediaRunner`` so the
     client queue starts clean."""
     responses = [
+        ApiResponse(200, "application/json", {}, json_data={"quote": 1.0}),
         ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-1"}),
         ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"}),
         # The third call returns binary directly inside the polling loop.
         ApiResponse(200, "video/mp4", {}, content=b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32),
     ]
     client = FakeClient(responses)
-    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
     request_obj = request(
         {
             "operation": "video.generate",
@@ -499,18 +532,18 @@ def test_video_queue_polls_then_save_binary(tmp_path: Path) -> None:
             "output": {"directory": str(tmp_path / "artifacts"), "write_metadata": False},
         }
     )
-    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    runner = make_runner(tmp_path, client, quote_store=_seed_quote(tmp_path, request_obj))
     result = runner.run(request_obj)
     assert result["status"] == "completed"
 
 
 def test_video_queue_pending_status_is_recorded(tmp_path: Path) -> None:
     responses = [
+        ApiResponse(200, "application/json", {}, json_data={"quote": 1.0}),
         ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-1"}),
         ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"}),
     ]
     client = FakeClient(responses)
-    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
     request_obj = request(
         {
             "operation": "video.generate",
@@ -521,7 +554,7 @@ def test_video_queue_pending_status_is_recorded(tmp_path: Path) -> None:
             "output": {"write_metadata": False},
         }
     )
-    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    runner = make_runner(tmp_path, client, quote_store=_seed_quote(tmp_path, request_obj))
     queued = runner.run(request_obj)
     assert queued["status"] == "queued"
     assert JobStore(tmp_path / "jobs").get("queue-1")["status"] == "queued"
@@ -689,19 +722,26 @@ def test_consent_block_attached_only_when_approval_matches(tmp_path: Path) -> No
     # attach consents.
     client = FakeClient(
         [
+            ApiResponse(200, "application/json", {}, json_data={"quote": 1.0}),
             ApiResponse(200, "application/json", {}, json_data={"queue_id": "v1"}),
         ]
     )
-    runner = make_runner(tmp_path, client, consent_store=store)
     request_obj = request(
         {
             "operation": "video.generate",
             "model": "video-model",
             "prompt": "p",
             "parameters": {"duration": "5s"},
-            # Skip quote to keep this test focused on consent gating.
+            # Approval pre-seeded via quote_store below so consent gating is
+            # testable in isolation.
             "execution": {"quote_first": False, "wait": False},
         }
+    )
+    runner = make_runner(
+        tmp_path,
+        client,
+        consent_store=store,
+        quote_store=_seed_quote(tmp_path, request_obj),
     )
     queued = runner.run(request_obj)
     assert queued["status"] == "queued"

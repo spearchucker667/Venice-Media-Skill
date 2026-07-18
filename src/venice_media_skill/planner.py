@@ -355,9 +355,9 @@ def _defaults_for_operation(operation: str) -> dict[str, Any]:
     params: dict[str, Any] = {}
     execution: dict[str, Any] = {"quote_first": True, "wait": True}
     if operation == "image.generate":
-        params.update({"safe_mode": False, "hide_watermark": True, "format": "webp", "variants": 1})
+        params.update({"format": "webp", "variants": 1})
     elif operation in {"image.edit", "image.multi_edit"}:
-        params.update({"safe_mode": False, "output_format": "png"})
+        params.update({"output_format": "png"})
     elif operation == "video.generate":
         params["audio"] = True
     elif operation == "audio.tts":

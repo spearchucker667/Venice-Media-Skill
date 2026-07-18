@@ -17,7 +17,7 @@ Before any commit, run:
 This is the single source of truth for CI quality and runs, in order:
 `python -m compileall -q src` → `ruff check .` → `ruff format --check .` → `mypy src` → `pytest --cov=venice_media_skill` → `python -m build` → `validate-openapi references/venice-openapi.yaml` → JSON sanity check on `adapters/kimi-code/kimi.plugin.json` and `references/request.schema.json`.
 
-CI also runs this on Python 3.11 / 3.12 / 3.13 and a cross-platform smoke (`macos-latest`, `windows-latest`) that exercises `doctor`, `schema`, and `validate-openapi`.
+CI also runs this on Python 3.11 / 3.12 / 3.13 and a cross-platform smoke (`macos-latest`, `windows-latest`) that exercises `doctor`, `schema`, and `validate-openapi`. Additional CI jobs: `wheel-smoke` (fresh venv + wheel install + smoke), `minimum-deps` (pins `httpx==0.28.1`, `platformdirs==4.3.6`, `PyYAML==6.0.2`), `quality` now runs `inspect-sdist.py` + `verify-bundled-assets.py` after build.
 
 ## Targeted commands
 
@@ -40,11 +40,11 @@ Coverage gate is 80% (`tool.coverage.report.fail_under` in `pyproject.toml`).
 ```
 src/venice_media_skill/   Python bridge package (mypy strict target)
   cli.py                  argparse entry; JSON stdout, errors stderr, exit codes 0/2-9
-  client.py               Bearer-authenticated HTTPS + fail-closed public downloader
+  client.py               Bearer-authenticated HTTPS + fail-closed public downloader; public API: `download_public_url` (legacy 500 MiB), `download_public_bytes` (64 MiB default), `download_public_file` (2 GiB default, atomic rename); sink classes `_MemorySink`/`_FileSink` with `try/except BaseException: sink.discard(); raise` for atomicity
   catalog.py              Live GET /models with 1h on-disk cache
   config.py               platformdirs paths; Settings.load(require_api_key=…)
   consent.py              ConsentStore + QuoteApprovalStore (hash-bound, single-use)
-  errors.py               Typed error hierarchy
+  errors.py               Typed error hierarchy; `PublicHttpError(NetworkSafetyError)` for 4xx/5xx with status_code, content_type, request_id, body_preview (≤512 bytes)
   installer.py            install the Skill bundle to host-agent directories
   jobs.py                 Durable local queue records (resume, never auto-resubmit)
   output.py               Atomic writes, binary decoding, metadata sidecars
@@ -64,7 +64,7 @@ references/               Bundled API references (do NOT regenerate silently)
   seedance-2-0-api-guide.md
   seedance-face-consent-api-guide.md
 tests/                    Offline test suite (no live Venice calls)
-scripts/                  install.sh, install.ps1, uninstall.sh, refresh-openapi.sh, validate.sh
+scripts/                  install.sh, install.ps1, uninstall.sh, refresh-openapi.sh, validate.sh, inspect-sdist.py, verify-bundled-assets.py
 docs/                     architecture, threat-model, agent-workflow, host-integrations…
 ```
 

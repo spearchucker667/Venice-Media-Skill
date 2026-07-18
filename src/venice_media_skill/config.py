@@ -55,6 +55,22 @@ class Settings:
             )
         ).expanduser()
         timeout_seconds = float(env.get("VENICE_MEDIA_TIMEOUT", config.get("timeout_seconds", 120)))
+
+        # Validate paths - prevent path traversal and ensure they're within reasonable bounds
+        for name, path in [
+            ("config_dir", config_dir),
+            ("cache_dir", cache_dir),
+            ("state_dir", state_dir),
+            ("output_dir", output_dir),
+        ]:
+            _validate_safe_path(path, name)
+
+        # Validate timeout
+        if timeout_seconds <= 0:
+            raise ConfigurationError(f"timeout_seconds must be positive, got {timeout_seconds}")
+        if timeout_seconds > 86400:  # 24 hours max
+            raise ConfigurationError(f"timeout_seconds too large (max 86400), got {timeout_seconds}")
+
         if require_api_key and not api_key:
             raise ConfigurationError(
                 "VENICE_API_KEY is not set. Export it in the host shell; the bridge never stores API keys."
@@ -78,6 +94,30 @@ class Settings:
             self.output_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _validate_safe_path(path: Path, name: str) -> None:
+    """Validate that a path is safe to use.
+
+    - Must be absolute or relative without traversal
+    - Must not contain null bytes
+    - Must not be a UNC path or drive-letter path on Windows
+    """
+    path_str = str(path)
+    if "\x00" in path_str:
+        raise ConfigurationError(f"{name} contains null bytes")
+    if len(path_str) >= 2 and path_str[1] == ":":
+        raise ConfigurationError(f"{name} must not contain drive letters: {path_str}")
+    if path_str.startswith("\\\\") or path_str.startswith("//"):
+        raise ConfigurationError(f"{name} must not contain UNC paths: {path_str}")
+    # Resolve and ensure it doesn't escape via symlinks
+    try:
+        resolved = path.expanduser().resolve()
+        # Ensure the resolved path is reasonable (not root, not system dirs)
+        if resolved == Path("/") or str(resolved).startswith("/etc") or str(resolved).startswith("/usr"):
+            raise ConfigurationError(f"{name} resolves to system directory: {resolved}")
+    except (OSError, RuntimeError) as exc:
+        raise ConfigurationError(f"{name} path invalid: {exc}") from exc
 
 
 def _load_json_config(path: Path) -> dict[str, Any]:

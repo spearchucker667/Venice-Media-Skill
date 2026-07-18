@@ -674,6 +674,8 @@ class _MemorySink:
         if self._discarded:
             raise RuntimeError("MemorySink was discarded and cannot be finalized")
         body = b"".join(self._chunks)
+        if len(body) == 0:
+            raise NetworkSafetyError(url="", reason="empty download not allowed")
         return _Finalized(
             body=body,
             file_path=None,
@@ -723,6 +725,10 @@ class _FileSink:
         os.fsync(self._fp.fileno())
         self._fp.close()
         os.replace(self._tmp_path, self.destination)
+        if self.observed == 0:
+            with contextlib.suppress(Exception):
+                self.destination.unlink(missing_ok=True)
+            raise NetworkSafetyError(url="", reason="empty download not allowed")
         return _Finalized(
             body=b"",
             file_path=self.destination,

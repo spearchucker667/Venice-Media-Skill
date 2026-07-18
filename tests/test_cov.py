@@ -640,7 +640,11 @@ def test_runner_consume_consent_with_approval(tmp_path: Path) -> None:
     consent_store.approve(challenge_id=cid, confirmed_max_cost=5.0, acknowledge_policy=True)
     block = runner._consume_consent_approval(request=request, canonical=canonical)  # type: ignore[attr-defined]
     assert block is not None
-    assert block["_bridge_approval"] == cid
+    assert block == {
+        "confirmed_terms_and_privacy": True,
+        "confirmed_legal_right": True,
+        "confirmed_screening_acknowledged": True,
+    }
 
 
 def test_runner_require_quote_approval_cost_none(tmp_path: Path) -> None:
@@ -1357,9 +1361,17 @@ def test_canonical_payload_construction() -> None:
 
 def test_consent_object_helpers() -> None:
     obj = build_consent_object(policy_version="v1")
-    assert obj["consent_version"] == "v1"
+    assert obj == {
+        "confirmed_terms_and_privacy": True,
+        "confirmed_legal_right": True,
+        "confirmed_screening_acknowledged": True,
+    }
     obj = build_consent_object(policy_version="")
-    assert obj["consent_version"] == ""
+    assert obj == {
+        "confirmed_terms_and_privacy": True,
+        "confirmed_legal_right": True,
+        "confirmed_screening_acknowledged": True,
+    }
 
 
 def test_ensure_seedance_fact_branches() -> None:

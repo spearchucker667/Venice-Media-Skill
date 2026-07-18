@@ -15,8 +15,11 @@ queue time causes :class:`~venice_media_skill.errors.QuoteApprovalMismatch`.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,6 +32,46 @@ from .errors import (
     QuoteApprovalMismatch,
 )
 from .util import utc_now_iso
+
+_LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or (
+    "/tmp/venice-media-locks" if Path("/tmp").exists() else os.environ.get("TEMP", str(Path.home()))
+)
+
+
+def _get_lock_path(path: Path) -> Path:
+    """Get the lock file path for a given data file."""
+    return Path(_LOCK_DIR) / (path.name + ".lock")
+
+
+def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> None:
+    """Acquire a file-based lock. Works on both Unix and Windows."""
+    lock_path = _get_lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    while True:
+        try:
+            # Use atomic file creation for exclusive lock
+            if exclusive:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return
+            # For shared lock, just check if lock file exists
+            if not lock_path.exists():
+                return
+        except (FileExistsError, PermissionError, OSError):
+            pass
+        if time.monotonic() - start > timeout:
+            raise TimeoutError(f"Could not acquire lock on {path} within {timeout}s")
+        time.sleep(0.05)
+
+
+def _release_lock(path: Path, exclusive: bool = True) -> None:
+    """Release a file-based lock."""
+    lock_path = _get_lock_path(path)
+    if exclusive:
+        with contextlib.suppress(OSError):
+            lock_path.unlink(missing_ok=True)
+
 
 CHALLENGE_TTL_SECONDS: Final[int] = 7 * 24 * 3600
 QUOTE_APPROVAL_TTL_SECONDS: Final[int] = 24 * 3600
@@ -66,7 +109,25 @@ class ConsentStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            self._write({"challenges": {}, "approvals": {}})
+            self._write_seed()
+
+    def _write_seed(self) -> None:
+        from .output import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps({"challenges": {}, "approvals": {}}, indent=2, sort_keys=True) + "\n")
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"challenges": {}, "approvals": {}}
+        loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return {"challenges": {}, "approvals": {}}
+        return cast(dict[str, Any], loaded)
+
+    def _write(self, data: dict[str, Any]) -> None:
+        from .output import atomic_write_text  # local import to break cycle
+
+        atomic_write_text(self.path, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
     # -- challenges ---------------------------------------------------------
 
@@ -105,13 +166,23 @@ class ConsentStore:
             created_at=utc_now_iso(),
             expires_at=_iso_after_seconds(CHALLENGE_TTL_SECONDS),
         )
-        data = self._read()
-        data["challenges"][challenge_id] = asdict(challenge)
-        self._write(data)
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            data["challenges"][challenge_id] = asdict(challenge)
+            from .output import atomic_write_text
+
+            atomic_write_text(self.path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        finally:
+            _release_lock(self.path, exclusive=True)
         return challenge
 
     def load_challenge(self, challenge_id: str) -> ConsentChallenge | None:
-        data = self._read()
+        _acquire_lock(self.path, exclusive=False)
+        try:
+            data = self._read()
+        finally:
+            _release_lock(self.path, exclusive=False)
         payload = data.get("challenges", {}).get(challenge_id)
         if payload is None:
             return None
@@ -141,13 +212,23 @@ class ConsentStore:
             payload_hash=challenge.payload_hash,
             max_cost=confirmed_max_cost,
         )
-        data = self._read()
-        data.setdefault("approvals", {})[challenge.challenge_id] = asdict(approval)
-        self._write(data)
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            data.setdefault("approvals", {})[challenge.challenge_id] = asdict(approval)
+            from .output import atomic_write_text
+
+            atomic_write_text(self.path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        finally:
+            _release_lock(self.path, exclusive=True)
         return approval
 
     def approval_for(self, payload_hash: str) -> ConsentApproval | None:
-        data = self._read()
+        _acquire_lock(self.path, exclusive=False)
+        try:
+            data = self._read()
+        finally:
+            _release_lock(self.path, exclusive=False)
         approvals = data.get("approvals", {})
         for entry in approvals.values():
             if entry.get("payload_hash") != payload_hash:
@@ -156,21 +237,6 @@ class ConsentStore:
                 continue
             return ConsentApproval(**entry)
         return None
-
-    # -- IO ----------------------------------------------------------------
-
-    def _read(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {"challenges": {}, "approvals": {}}
-        loaded = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(loaded, dict):
-            return {"challenges": {}, "approvals": {}}
-        return cast(dict[str, Any], loaded)
-
-    def _write(self, data: dict[str, Any]) -> None:
-        from .output import atomic_write_text  # local import to break cycle
-
-        atomic_write_text(self.path, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
 class QuoteApprovalStore:
@@ -201,32 +267,49 @@ class QuoteApprovalStore:
             created_at=utc_now_iso(),
             expires_at=_iso_after_seconds(QUOTE_APPROVAL_TTL_SECONDS),
         )
-        data = self._read()
-        data[approval.approval_id] = _serialize_quote_approval(approval)
-        self._write(data)
+        _acquire_lock(self.path)
+        try:
+            data = self._read()
+            data[approval.approval_id] = _serialize_quote_approval(approval)
+            self._write(data)
+        finally:
+            _release_lock(self.path)
         return approval
 
     def consume(self, *, approval_id: str, current_payload_hash: str, max_observed_cost: float | None) -> QuoteApproval:
-        data = self._read()
-        entry = data.get(approval_id)
-        if entry is None:
-            raise ConsentApprovalMissing(approval_id)
-        if _is_expired(entry["expires_at"]):
-            raise ConsentApprovalMissing("expired")
-        approval = QuoteApproval(**entry)
-        if approval.payload_hash != current_payload_hash:
-            raise QuoteApprovalMismatch(approved_hash=approval.payload_hash, current_hash=current_payload_hash)
-        if max_observed_cost is not None and approval.max_cost is not None and max_observed_cost > approval.max_cost:
-            raise ConsentApprovalMissing(
-                f"quote exceeded approved max_cost {approval.max_cost} (observed {max_observed_cost})"
+        _acquire_lock(self.path)
+        try:
+            data = self._read()
+            entry = data.get(approval_id)
+            if entry is None:
+                raise ConsentApprovalMissing(approval_id)
+            if _is_expired(entry["expires_at"]):
+                raise ConsentApprovalMissing("expired")
+            approval = QuoteApproval(**entry)
+            if approval.payload_hash != current_payload_hash:
+                raise QuoteApprovalMismatch(approved_hash=approval.payload_hash, current_hash=current_payload_hash)
+            _exceeds_max_cost = (
+                max_observed_cost is not None
+                and approval.max_cost is not None
+                and max_observed_cost > approval.max_cost
             )
-        # Single-use approvals: remove once consumed.
-        del data[approval_id]
-        self._write(data)
+            if _exceeds_max_cost:
+                raise ConsentApprovalMissing(
+                    f"quote exceeded approved max_cost {approval.max_cost} (observed {max_observed_cost})"
+                )
+            # Single-use approvals: remove once consumed.
+            del data[approval_id]
+            self._write(data)
+        finally:
+            _release_lock(self.path)
         return approval
 
     def resolve(self, payload_hash: str) -> QuoteApproval | None:
-        data = self._read()
+        _acquire_lock(self.path, exclusive=False)
+        try:
+            data = self._read()
+        finally:
+            _release_lock(self.path, exclusive=False)
         for entry in data.values():
             if entry.get("payload_hash") != payload_hash:
                 continue
@@ -299,12 +382,15 @@ def build_consent_object(policy_version: str) -> dict[str, Any]:
     :class:`ConsentApproval` from an explicit user invocation; the runner
     only marshals this object onto a queue payload whose hash matches the
     approval.
+
+    Provider expects exactly:
+    {"consents": {"seedance": {"confirmed_terms_and_privacy": true,
+    "confirmed_legal_right": true, "confirmed_screening_acknowledged": true}}}
     """
     return {
         "confirmed_terms_and_privacy": True,
         "confirmed_legal_right": True,
         "confirmed_screening_acknowledged": True,
-        "consent_version": policy_version,
     }
 
 

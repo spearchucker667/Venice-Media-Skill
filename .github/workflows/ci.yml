@@ -37,40 +37,7 @@ jobs:
       - name: Verify bundled skill/reference mirrors
         run: python scripts/verify-bundled-assets.py
       - name: Inspect sdist contents
-        run: |
-          python -m build --sdist
-          set -e
-          SDIST="$(ls -1 dist/*.tar.gz | head -n1)"
-          echo "sdist: $SDIST"
-          python - <<'PY'
-          import re, sys, tarfile
-          with tarfile.open(sys.argv[1]) as tf:
-              names = tf.getnames()
-              members = tf.getmembers()
-          forbidden_tokens = [
-              ".venv/", "venv/", ".audit-venv/", "audit-venv/",
-              "__pycache__/", "/.git/", "node_modules/", "/.env",
-              "/.envrc", "/secrets/", "/credentials/",
-          ]
-          forbidden_ext = (".key", ".pem", ".pfx", ".p12")
-          hits: list[str] = []
-          for n in names:
-              if any(tok in n for tok in forbidden_tokens) or n.endswith(forbidden_ext):
-                  hits.append(f"forbidden-path: {n}")
-          for m in members:
-              if m.issym() or m.islnk():
-                  if m.linkname.startswith("/") or re.match(r"^[A-Z]:[\\/]", m.linkname):
-                      hits.append(f"absolute-symlink: {m.name} -> {m.linkname}")
-                  elif not m.linkname.startswith((".", "/")) and "/" in m.linkname:
-                      # Symlinks that point outside the working tree are suspect.
-                      hits.append(f"external-symlink: {m.name} -> {m.linkname}")
-          if hits:
-              print("SDIST REJECTED:")
-              for h in hits:
-                  print(" -", h)
-              sys.exit(1)
-          print(f"sdist OK: {len(names)} entries, no forbidden paths / symlinks.")
-          PY
+        run: python scripts/inspect-sdist.py
 
   cross-platform-smoke:
     name: Smoke / ${{ matrix.os }}
@@ -109,7 +76,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip build
       - name: Build wheel + sdist
         run: python -m build
       - name: Install wheel in fresh venv (no -e flag)
@@ -149,6 +116,11 @@ jobs:
             "PyYAML==6.0.2"
           python -m pip install -e .
       - name: Smoke the bridge against the lowest acceptable dependencies
+        env:
+          VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
+          VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media/cache
+          VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media/state
+          VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media/output
         run: |
           python -c "import httpx, platformdirs, yaml; \
             assert httpx.__version__ == '0.28.1'; \
@@ -156,8 +128,5 @@ jobs:
             assert tuple(int(p) for p in yaml.__version__.split('.')[:2]) >= (6, 0)"
           python -m venice_media_skill --help >/dev/null
           python -m venice_media_skill schema >/dev/null
+          python -m venice_media_skill doctor
           echo "minimum-deps: lower-bound httpx/platformdirs/PyYAML imports cleanly"
-          VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
-          VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media/cache
-          VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media/state
-          VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media/output

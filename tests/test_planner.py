@@ -68,8 +68,6 @@ def test_image_plan_uses_model_constraints() -> None:
     # P1-10 default redaction: provider-default safe fields live under
     # ``defaults.parameters``; execution policies live under
     # ``defaults.execution``.
-    assert result["defaults"]["parameters"]["safe_mode"] is False
-    assert result["defaults"]["parameters"]["hide_watermark"] is True
     assert result["defaults"]["execution"]["quote_first"] is True
 
 

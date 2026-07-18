@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import payloads
-from .client import ApiResponse, VeniceClient
+from .client import FILE_MAX_BYTES, ApiResponse, VeniceClient
 from .consent import (
     ConsentStore,
     QuoteApprovalStore,
@@ -209,14 +209,11 @@ class MediaRunner:
             queue_canonical = payloads.build_audio_queue(request)
             quote_canonical = payloads.build_audio_quote(request)
 
-        # Quoting is the default for paid queued operations; the host agent
-        # can opt out with execution.skip_quote (preferred) or by setting
-        # legacy ``execution.quote_first: false``, but never silently.
-        skip_quote = bool(
-            getattr(request.execution, "skip_quote", False) or not bool(getattr(request.execution, "quote_first", True))
-        )
+        # Quote is REQUIRED for paid queued operations. No skip_quote or
+        # quote_first=false bypass allowed. The host must explicitly approve
+        # the quote via approve-quote before we can queue.
         requires_quote = request.operation in QUOTE_REQUIRED_OPERATIONS
-        do_quote = requires_quote and not skip_quote
+        do_quote = requires_quote
 
         if request.execution.dry_run:
             return self._dry_run(request, queue_canonical, include_inputs=media_type == "video")
@@ -379,7 +376,13 @@ class MediaRunner:
                     )
                 if current_download_url != download_url:
                     self.jobs.update(queue_id, download_url=current_download_url)
-                downloaded = self.client.download_public_url(current_download_url)
+                # Stream large media directly to disk to avoid buffering in RAM
+                destination = self.writer.default_output_dir / f"{media_type}-{queue_id}"
+                downloaded = self.client.download_public_file(
+                    current_download_url,
+                    destination=destination,
+                    max_bytes=FILE_MAX_BYTES,
+                )
                 result = self._save_binary(
                     request,
                     downloaded,
@@ -667,18 +670,10 @@ class MediaRunner:
         approval = self.consent_store.approval_for(canonical.hash)
         if approval is None:
             return None
-        # ``consent_version`` is read from the provider's policy challenge
-        # captured alongside the approval; the CLI is responsible for
-        # supplying it via the stored challenge, so we borrow the same value
-        # when present on the canonical record.
-        challenge = self.consent_store.load_challenge(approval.challenge_id)
-        version = challenge.consent_version if challenge is not None and challenge.consent_version else ""
-        block = build_consent_object(policy_version=version)
-        if version:
-            block["consent_version"] = version
-        # Explicitly tie this consent block back to the approval ID for
-        # forensic auditing; the provider does not echo this field.
-        block["_bridge_approval"] = approval.challenge_id
+        # Provider expects exactly:
+        # {"consents": {"seedance": {"confirmed_terms_and_privacy": true,
+        # "confirmed_legal_right": true, "confirmed_screening_acknowledged": true}}}
+        block = build_consent_object(policy_version="")
         return block
 
     def _require_quote_approval(

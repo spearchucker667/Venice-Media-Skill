@@ -268,6 +268,30 @@ class MediaRequest:
 
 def request_json_schema() -> dict[str, Any]:
     reserved_list = sorted(RESERVED_PARAMETERS)
+
+    # Build per-operation parameter schemas
+    param_schemas: dict[str, dict[str, Any]] = {}
+    for op, rule in _PARAM_RULES.items():
+        props: dict[str, dict[str, Any]] = {}
+        for key in rule.get("strings", set()):
+            props[key] = {"type": "string"}
+        for key in rule.get("integers", set()):
+            props[key] = {"type": "integer"}
+        for key in rule.get("numbers", set()):
+            props[key] = {"type": "number"}
+        for key in rule.get("booleans", set()):
+            props[key] = {"type": "boolean"}
+        props["queue_id"] = {"type": "string"}
+        param_schemas[op] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": props,
+        }
+
+    parameter_options = [{"properties": {**{"operation": {"const": op}}, **param_schemas[op]}} for op in param_schemas]
+    if not parameter_options:
+        parameter_options = [{}]
+
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://raw.githubusercontent.com/spearchucker667/venice-media-skill/main/references/request.schema.json",
@@ -286,7 +310,7 @@ def request_json_schema() -> dict[str, Any]:
                 "not": {
                     "anyOf": [{"required": [key]} for key in reserved_list],
                 },
-                "properties": {},  # Per-operation allowlist lives in payloads.
+                "oneOf": parameter_options,
             },
             "inputs": {"type": "object", "additionalProperties": True},
             "output": {
@@ -412,8 +436,12 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
             keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
             raise PayloadValidationError(f"Unknown fields: {keys}.")
     elif operation == "audio.transcribe":
-        if set(inputs) != {"audio"} and "audio" not in inputs:
+        if "audio" not in inputs:
             raise PayloadValidationError("audio.transcribe requires inputs.audio.")
+        unknown = set(inputs) - {"audio"}
+        if unknown:
+            keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
+            raise PayloadValidationError(f"Unknown fields: {keys}.")
     elif operation.startswith("video."):
         allowed = {
             "image",
@@ -468,9 +496,10 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
         "integers": {"upscale_factor", "seed", "reference_video_total_duration"},
     },
     "audio.generate": {
-        "strings": {"lyrics_prompt", "voice"},
-        "integers": {"duration_seconds", "character_count", "seed"},
-        "booleans": {"instrumental"},
+        "strings": {"lyrics_prompt", "voice", "language_code"},
+        "integers": {"duration_seconds", "character_count"},
+        "booleans": {"force_instrumental", "lyrics_optimizer"},
+        "numbers": {"speed"},
     },
     "audio.tts": {
         "strings": {"voice", "response_format"},
@@ -504,6 +533,11 @@ def _validate_parameters(request: MediaRequest) -> None:
         if key in request.parameters and not isinstance(request.parameters[key], bool):
             raise PayloadValidationError(
                 f"parameters.{key} must be a boolean, not {type(request.parameters[key]).__name__}."
+            )
+    for key in rule.get("strings", set()):
+        if key in request.parameters and not isinstance(request.parameters[key], str):
+            raise PayloadValidationError(
+                f"parameters.{key} must be a string, not {type(request.parameters[key]).__name__}."
             )
     for key in rule.get("integers", set()):
         if key not in request.parameters:
