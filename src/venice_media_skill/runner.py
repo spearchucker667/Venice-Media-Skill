@@ -28,6 +28,7 @@ from .consent import (
 from .errors import (
     ConsentApprovalMissing,
     ConsentRequired,
+    DurableQueueWriteFailed,
     OutputError,
     QuoteApprovalMismatch,
     QuoteApprovalRequired,
@@ -294,16 +295,52 @@ class MediaRunner:
         if not isinstance(queue_id, str) or not queue_id:
             self._release_claims(claimed_approvals)
             raise OutputError(f"{queue_canonical.endpoint} response did not include queue_id.")
-        # Provider accepted the paid queue: finalise claims permanently.
-        self._finalize_claims(claimed_approvals)
+        # Durability gate. Venice already accepted the paid queue; before
+        # we consume any quote or consent approval we MUST persist the
+        # ``queue_id`` locally so it survives a crash, disk-full error,
+        # or oversized-record failure. We write the record with the
+        # ``pending_finalize`` status and promote it to ``queued`` only
+        # after the approvals have been permanently consumed. If the
+        # durable write itself fails the queue_id is surfaced in the
+        # exception so the operator can retrieve the paid job via
+        # ``video.retrieve`` / ``audio.retrieve`` without resubmitting
+        # — and the approvals are released (NOT auto-resubmitted) so a
+        # second paid submission cannot occur by accident.
+        try:
+            self.jobs.create(
+                media_type=media_type,
+                model=request.model or "",
+                queue_id=queue_id,
+                request=request.to_dict(),
+                input_summary=_summarize_inputs(request),
+                status="pending_finalize",
+            )
+        except (OutputError, OSError) as exc:
+            self._release_claims(claimed_approvals)
+            raise DurableQueueWriteFailed(
+                queue_id=queue_id,
+                operation=request.operation,
+                model=request.model or "",
+                media_type=media_type,
+                cause=str(exc),
+            ) from exc
+        # Safe to consume the approvals: the durable record guarantees
+        # we can always come back to the same ``queue_id``. If this
+        # finalise step itself fails the record stays in
+        # ``pending_finalize`` and the operator can re-run retrieve;
+        # the approvals are released so a re-approve won't double-pay.
+        try:
+            self._finalize_claims(claimed_approvals)
+        except (OutputError, OSError) as exc:  # pragma: no cover - extremely rare
+            raise DurableQueueWriteFailed(
+                queue_id=queue_id,
+                operation=request.operation,
+                model=request.model or "",
+                media_type=media_type,
+                cause=f"job record persisted but finalising approvals failed: {exc}",
+            ) from exc
+        self.jobs.update(queue_id, status="queued")
         download_url = queued.json_data.get("download_url")
-        self.jobs.create(
-            media_type=media_type,
-            model=request.model or "",
-            queue_id=queue_id,
-            request=request.to_dict(),
-            input_summary=_summarize_inputs(request),
-        )
         if isinstance(download_url, str):
             self.jobs.update(queue_id, download_url=download_url)
         if not request.execution.wait:
@@ -365,8 +402,11 @@ class MediaRunner:
                     f"Provided model {model!r} does not match job-store model "
                     f"{record.get('model')!r}; pick a queue_id from the matching run."
                 )
-            saved = record.get("download_url")
-            download_url = saved if isinstance(saved, str) else None
+            # The record NEVER stores a live signed URL inline: only
+            # ``download_url_secret_ref`` points to a sidecar file.
+            # ``download_url_for`` is the only path that returns a URL
+            # the runner is willing to hand to the downloader.
+            download_url = self.jobs.download_url_for(queue_id)
 
         return self._poll_and_save(
             request,
