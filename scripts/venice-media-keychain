@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 2
+}
+
+[[ "$(uname -s)" == "Darwin" ]] || fail "venice-media-keychain is supported only on macOS."
+
+security_executable="$(command -v security || true)"
+[[ -n "$security_executable" && -x "$security_executable" ]] || fail "macOS security executable was not found."
+
+launcher_path="${BASH_SOURCE[0]}"
+if [[ "$launcher_path" != */* ]]; then
+  launcher_path="$(command -v -- "$launcher_path" || true)"
+fi
+[[ -n "$launcher_path" ]] || fail "Unable to resolve the Keychain launcher path."
+
+bridge_executable="${VENICE_MEDIA_EXECUTABLE:-}"
+if [[ -n "$bridge_executable" ]]; then
+  [[ -f "$bridge_executable" && -x "$bridge_executable" ]] || \
+    fail "VENICE_MEDIA_EXECUTABLE does not name an executable file."
+else
+  sibling="${launcher_path%/*}/venice-media"
+  if [[ -f "$sibling" && -x "$sibling" ]]; then
+    bridge_executable="$sibling"
+  else
+    bridge_executable="$(command -v venice-media || true)"
+  fi
+fi
+[[ -n "$bridge_executable" && -f "$bridge_executable" && -x "$bridge_executable" ]] || \
+  fail "venice-media executable was not found."
+[[ ! "$bridge_executable" -ef "$launcher_path" ]] || fail "Refusing recursive Keychain launcher resolution."
+
+account="${VENICE_KEYCHAIN_ACCOUNT:-${USER:-}}"
+if [[ -z "$account" ]]; then
+  id_executable="$(command -v id || true)"
+  [[ -n "$id_executable" ]] || fail "Unable to determine the Keychain account name."
+  account="$($id_executable -un 2>/dev/null || true)"
+fi
+[[ -n "$account" ]] || fail "Unable to determine the Keychain account name."
+
+service="${VENICE_KEYCHAIN_SERVICE:-venice-api-key}"
+[[ -n "$service" ]] || fail "VENICE_KEYCHAIN_SERVICE must not be empty."
+
+if ! credential="$($security_executable find-generic-password -a "$account" -s "$service" -w 2>/dev/null)"; then
+  fail "Unable to read the configured item from macOS Keychain."
+fi
+[[ -n "$credential" ]] || fail "The configured macOS Keychain item is empty."
+
+VENICE_API_KEY="$credential" exec "$bridge_executable" "$@"

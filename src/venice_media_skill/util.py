@@ -74,6 +74,21 @@ def redact_text(value: str) -> str:
 
 
 _REDACT_HEADERS = frozenset({"authorization", "api_key", "token", "venice_api_key", "x-auth-token"})
+_REDACT_MEDIA_FIELDS = frozenset(
+    {
+        "audio",
+        "end_image",
+        "image",
+        "images",
+        "input_audio",
+        "input_image",
+        "reference_audios",
+        "reference_images",
+        "reference_videos",
+        "scene_images",
+        "video",
+    }
+)
 
 
 def redact_data(value: object) -> object:
@@ -82,6 +97,8 @@ def redact_data(value: object) -> object:
         for key, item in value.items():
             if key.lower() in _REDACT_HEADERS:
                 output[key] = "[REDACTED]"
+            elif key.lower() in _REDACT_MEDIA_FIELDS and _contains_inline_media(item):
+                output[key] = "[REDACTED_MEDIA]"
             else:
                 output[key] = redact_data(item)
         return output
@@ -90,6 +107,21 @@ def redact_data(value: object) -> object:
     if isinstance(value, str):
         return redact_text(value)
     return value
+
+
+def _contains_inline_media(value: object) -> bool:
+    if isinstance(value, list):
+        return any(_contains_inline_media(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    if value.startswith("data:"):
+        return True
+    if len(value) < 128 or len(value) % 4:
+        return False
+    try:
+        return bool(base64.b64decode(value, validate=True))
+    except ValueError:
+        return False
 
 
 def path_to_data_url(path_value: str | Path, *, max_bytes: int = 50 * 1024 * 1024) -> str:
@@ -138,6 +170,83 @@ def normalize_media_input(value: str, *, max_bytes: int = 50 * 1024 * 1024) -> s
         fast_validate_content_type(blob, mime)
         return value
     return path_to_data_url(value, max_bytes=max_bytes)
+
+
+def normalize_media_as_raw_base64(
+    value: str,
+    *,
+    media_kind: str = "image",
+    max_bytes: int = 25 * 1024 * 1024,
+) -> str:
+    """Normalize one local file, data URL, or raw base64 value to raw base64.
+
+    This endpoint-specific representation is intentionally separate from
+    :func:`normalize_media_input`, whose data-URL output is required by image
+    editing and queued video inputs. The validated encoded bytes are preserved
+    exactly for existing data URLs and raw-base64 inputs.
+    """
+    if not value:
+        raise RequestValidationError("Media input must not be empty.")
+    if value.startswith(("http://", "https://")):
+        raise RequestValidationError("This endpoint requires inline media, not a URL.")
+
+    if value.startswith("data:"):
+        if len(value) > 4 * ((max_bytes + 2) // 3) + 1024:
+            raise RequestValidationError("Base64 data URL exceeds the endpoint input limit.")
+        header, encoded = value.split(",", 1) if "," in value else (value, "")
+        mime_type, blob = decode_data_url(value)
+        if ";base64" not in header:
+            raise RequestValidationError("Only base64 data URLs are supported.")
+        _validate_inline_media(blob, mime_type, media_kind=media_kind, max_bytes=max_bytes)
+        return encoded
+
+    encoded_limit = 4 * ((max_bytes + 2) // 3)
+    if len(value) > encoded_limit:
+        raise RequestValidationError("Raw-base64 media input exceeds the endpoint input limit.")
+
+    path = Path(value).expanduser()
+    try:
+        is_file = path.is_file()
+    except OSError:
+        # Long raw-base64 values are not filesystem paths and can exceed
+        # platform filename limits during ``stat``.
+        is_file = False
+    if is_file:
+        resolved = path.resolve()
+        size = resolved.stat().st_size
+        if size == 0:
+            raise RequestValidationError("Media input file must not be empty.")
+        if size > max_bytes:
+            raise RequestValidationError(f"Media input file exceeds the {max_bytes}-byte endpoint limit.")
+        blob = resolved.read_bytes()
+        inferred_mime = mimetypes.guess_type(resolved.name)[0] or detected_content_type(blob)
+        if not inferred_mime:
+            raise RequestValidationError("Unable to determine the media input type.")
+        _validate_inline_media(blob, inferred_mime, media_kind=media_kind, max_bytes=max_bytes)
+        return base64.b64encode(blob).decode("ascii")
+
+    try:
+        blob = base64.b64decode(value, validate=True)
+    except ValueError as exc:
+        raise RequestValidationError(
+            "Media input must be an existing local file, a valid base64 data URL, or valid raw base64."
+        ) from exc
+    detected_mime = detected_content_type(blob)
+    if not detected_mime:
+        raise RequestValidationError("Unable to determine the raw-base64 media type.")
+    _validate_inline_media(blob, detected_mime, media_kind=media_kind, max_bytes=max_bytes)
+    return value
+
+
+def _validate_inline_media(blob: bytes, mime_type: str, *, media_kind: str, max_bytes: int) -> None:
+    if not blob:
+        raise RequestValidationError("Decoded media input must not be empty.")
+    if len(blob) > max_bytes:
+        raise RequestValidationError(f"Decoded media input exceeds the {max_bytes}-byte endpoint limit.")
+    normalized_mime = mime_type.split(";", 1)[0].strip().lower()
+    if not normalized_mime.startswith(f"{media_kind}/"):
+        raise RequestValidationError(f"Expected {media_kind} media input.")
+    fast_validate_content_type(blob, normalized_mime)
 
 
 def decode_data_url(value: str) -> tuple[str, bytes]:

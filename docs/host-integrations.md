@@ -32,7 +32,15 @@ Tool-specific skill discovery changes over time. The stable integration is:
 
 Do not add the Venice API key to project instruction files, MCP configuration, command aliases, or manifests.
 
-Agent hosts may sanitize subprocess environments even when the key is exported in a normal Terminal. Agents must run `venice-media --version`, `venice-media doctor`, then `venice-media doctor --online`. They must never judge a credential by its prefix or request it in chat. On macOS, `venice-media-keychain <arguments>` securely retrieves the existing `venice-api-key` Keychain item and execs the ordinary CLI; on other platforms, ask the user to run the authenticated command in their configured local shell.
+Agent hosts may sanitize subprocess environments even when the key is exported in a normal Terminal. Agents must run `venice-media --version`, `venice-media doctor`, then `venice-media doctor --online`. They must never judge a credential by its prefix or request it in chat. On macOS, create a generic-password item in Keychain Access with service `venice-api-key` and the current account, then use one launcher consistently:
+
+```bash
+venice-media-keychain doctor --online
+venice-media-keychain models --type image --refresh
+venice-media-keychain run request.json
+```
+
+The launcher checks `VENICE_MEDIA_EXECUTABLE`, a sibling `venice-media`, then `PATH`; it rejects recursive resolution. `VENICE_KEYCHAIN_SERVICE` and `VENICE_KEYCHAIN_ACCOUNT` override the non-secret item identifiers. It retrieves the credential at invocation time, places it only in the final child environment, and uses `exec` so signals and exit status are preserved. On other platforms, ask the user to run the authenticated command in their configured local shell.
 
 ## Project-local installation
 
@@ -66,4 +74,4 @@ Exit codes:
 | 8 | Quote approval hash no longer matches the queued payload. Resubmit a fresh quote. |
 | 9 | Transport error (DNS, TCP, TLS). |
 
-A non-interactive wrapper must preserve stderr and exit code, then parse stdout only when exit code is zero.
+A non-interactive wrapper must preserve stderr and exit code, then parse stdout only when exit code is zero. Run `venice-media installations` to compare the active CLI, every `PATH` candidate, the Keychain launcher target, package version/location, Python interpreter, installation type, and missing dependencies. Diagnostics never modify an installation.

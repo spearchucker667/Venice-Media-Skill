@@ -36,6 +36,41 @@ def test_catalog_get_falls_back_to_all(tmp_path: Path) -> None:
     assert catalog.get("target", "image") == {"id": "target"}
 
 
+def test_catalog_preserves_exact_mocked_image_model_id(tmp_path: Path) -> None:
+    class ExactClient:
+        def get_json(self, _path: str, *, params: dict[str, Any] | None = None) -> Any:
+            assert params is not None
+            if params["type"] == "image":
+                return {
+                    "data": [
+                        {
+                            "id": "lustify-v7",
+                            "type": "image",
+                            "model_spec": {"offline": False, "pricing": {"generation": {"usd": 0.01}}},
+                        }
+                    ]
+                }
+            return {"data": []}
+
+    catalog = ModelCatalog(ExactClient(), tmp_path / "models.json")  # type: ignore[arg-type]
+    selected = catalog.get("lustify-v7", "image")
+    assert selected is not None
+    assert selected["id"] == "lustify-v7"
+    assert catalog.get("lustify", "image") is None
+
+
+def test_catalog_cache_freshness_and_explicit_refresh(tmp_path: Path, monkeypatch: object) -> None:
+    now = 1000.0
+    monkeypatch.setattr("venice_media_skill.catalog.time.time", lambda: now)  # type: ignore[attr-defined]
+    client = _ExchangeableClient({"image": ["first"]})
+    catalog = ModelCatalog(client, tmp_path / "models.json", cache_ttl_seconds=3600)  # type: ignore[arg-type]
+    assert catalog.list("image")[0]["id"] == "first"
+    client.payload_by_type["image"] = ["second"]
+    assert catalog.list("image")[0]["id"] == "first"
+    assert catalog.list("image", refresh=True)[0]["id"] == "second"
+    assert client.calls == ["image", "image"]
+
+
 # ----- P1-02 model cache refresh -----
 
 

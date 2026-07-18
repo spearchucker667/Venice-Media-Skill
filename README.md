@@ -138,7 +138,7 @@ venice-media install-skill --host kimi --scope user
 .\scripts\install.ps1 -HostName kimi -Scope user
 ```
 
-On macOS/Linux/WSL, this creates an isolated virtual environment under `${XDG_DATA_HOME:-~/.local/share}/venice-media-skill/venv` and a launcher under `${XDG_BIN_HOME:-~/.local/bin}/venice-media`. On Windows, the environment is installed under `%LOCALAPPDATA%\venice-media-skill\venv` and the launcher is `%USERPROFILE%\.local\bin\venice-media.cmd`.
+On macOS/Linux/WSL, this creates an isolated virtual environment under `${XDG_DATA_HOME:-~/.local/share}/venice-media-skill/venv` and a launcher under `${XDG_BIN_HOME:-~/.local/bin}/venice-media`. On macOS it also installs `venice-media-keychain` in the same executable directory with mode `0700`; reinstalling replaces both launchers atomically. On Windows, the environment is installed under `%LOCALAPPDATA%\venice-media-skill\venv` and the launcher is `%USERPROFILE%\.local\bin\venice-media.cmd`.
 
 > Ensure `~/.local/bin` is on your `PATH`.
 
@@ -151,6 +151,9 @@ On macOS/Linux/WSL, this creates an isolated virtual environment under `${XDG_DA
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `VENICE_API_KEY` | Online only | Venice API key; never written by the bridge | None |
+| `VENICE_MEDIA_EXECUTABLE` | ❌ No | Keychain launcher target override; must name an executable file | Sibling `venice-media`, then `PATH` |
+| `VENICE_KEYCHAIN_SERVICE` | ❌ No | macOS Keychain generic-password service | `venice-api-key` |
+| `VENICE_KEYCHAIN_ACCOUNT` | ❌ No | macOS Keychain account; falls back to `USER`, then `id -un` | Current account |
 | `VENICE_MEDIA_OUTPUT_DIR` | ❌ No | Custom output directory | `./venice-media-output` |
 | `VENICE_MEDIA_CONFIG_DIR` | ❌ No | Override the platform-specific configuration directory | `platformdirs` value |
 | `VENICE_MEDIA_CACHE_DIR` | ❌ No | Override the model-cache directory | `platformdirs` value |
@@ -199,6 +202,8 @@ venice-media-keychain models --type image --refresh
 
 It reads the Keychain item identified by account `$USER` and service `venice-api-key`, then scopes `VENICE_API_KEY` only to the exec'd child. It uses no eval or temporary file and does not print the credential. Never paste credentials into chat. Rotate any credential exposed in chat, logs, screenshots, issue reports, or shell history.
 
+Create the generic-password item with the macOS Keychain Access application so the credential never appears in a command argument or shell history. The launcher resolves its target in this order: `VENICE_MEDIA_EXECUTABLE`, an executable sibling named `venice-media`, then `command -v venice-media`. It rejects recursion. Override the service or account with `VENICE_KEYCHAIN_SERVICE` and `VENICE_KEYCHAIN_ACCOUNT`; neither variable contains the credential.
+
 To diagnose duplicate or stale installations without changing them:
 
 ```bash
@@ -221,6 +226,9 @@ venice-media models --type tts
 venice-media models --type video
 
 # Refresh model cache
+venice-media models --refresh
+
+# Refresh only the image catalog
 venice-media models --type image --refresh
 ```
 
@@ -236,6 +244,8 @@ venice-media plan image.generate --model venice-sd35
 # Get questions for video generation
 venice-media plan video.generate --model MODEL_ID
 ```
+
+For `image.generate`, `parameters.variants` is the canonical requested image count and must be an integer from 1 through 4. Omit it or set it to `1` for one binary image; the bridge sends `return_binary=true` and deliberately omits `variants` from the HTTP payload. Counts 2–4 use JSON response mode and serialize both `return_binary=false` and the requested `variants` count. `return_binary` is bridge-controlled and is rejected in manifests.
 
 #### Execute Requests
 

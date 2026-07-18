@@ -361,6 +361,11 @@ def request_json_schema() -> dict[str, Any]:
         for key, constraints in numeric_constraints.items():
             if key in props:
                 props[key].update(constraints)
+        if op == "image.generate" and "variants" in props:
+            props["variants"]["description"] = (
+                "Canonical image count (1-4). The bridge uses binary response mode and omits the wire-level "
+                "variants field for one image; counts 2-4 use JSON response mode and serialize variants."
+            )
         if op in {"video.retrieve", "audio.retrieve"}:
             props["queue_id"] = {"type": "string"}
         return {

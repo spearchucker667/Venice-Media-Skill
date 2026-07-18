@@ -47,15 +47,36 @@ venice-media doctor --online
 
 If the command is missing, stop and tell the user to install this repository. Treat the credential as an opaque secret: its textual prefix does not determine whether it is valid. Only `doctor --online` and its authenticated API response determine validity.
 
-If the key is available in Terminal but `doctor --online` reports it missing in the agent subprocess, explain that the host likely sanitizes its environment. On macOS, prefer `venice-media-keychain doctor --online`, which retrieves the `venice-api-key` Keychain item at execution time and scopes it to the child process. Otherwise ask the user to execute the authenticated command locally. Detect the actual host; never invent or assume an application bundle path.
+If the key is available in Terminal but `doctor --online` reports it missing in the agent subprocess, explain that the host likely sanitizes its environment. On macOS, prefer the Keychain-backed launcher, which retrieves the configured item at execution time and scopes it to the child process. Use that launcher consistently:
+
+```bash
+venice-media-keychain doctor --online
+venice-media-keychain models --type image --refresh
+venice-media-keychain run request.json
+```
+
+Otherwise ask the user to execute the authenticated command locally. Detect the actual host; never invent or assume an application bundle path.
 
 Never ask the user to paste or resend the credential in chat. Never use a FIFO, temporary secret file, plaintext `.env` file, credential-bearing command argument, or shell-history entry. A credential exposed in chat, logs, screenshots, issue reports, or shell history must be rotated.
 
-For image discovery always run:
+For a complete catalog refresh run `venice-media models --refresh`. For image discovery always run:
 
 ```bash
 venice-media models --type image --refresh
 ```
+
+For an explicitly requested image model, match the exact catalog ID and confirm it is present under the image type and not marked `model_spec.offline=true`. Never substitute a similar, default, or recommended model without the user's approval. Report the actual model ID used.
+
+## Image generation response mode
+
+Use `parameters.variants` as the canonical requested image count. Omit it or set it to `1` for one image; the bridge selects binary mode and omits the wire-level `variants` field because Venice rejects `return_binary=true` together with any `variants` value. Counts `2`–`4` select JSON mode and preserve the count. Never place `return_binary` in a manifest or try to force both fields manually.
+
+Before every image generation, run the manifest with `execution.dry_run=true`. Confirm `output_plan` reports:
+
+- One image: `image_count=1`, `response_mode=binary`, `variants_field=omitted`.
+- Multiple images: `image_count=<2-4>`, `response_mode=json`, and the same `variants` count.
+
+Only then change `dry_run` to `false`. After a provider rejection, do not repeat the charged request with the same payload. Retry at most once, and only after a confirmed local bridge correction plus a clean dry-run proves that the wire payload changed.
 
 ## Bundled API reference
 
@@ -128,6 +149,8 @@ Minimal image example:
 
 Do not put `safe_mode`, `hide_watermark`, or `return_binary` in the manifest. These are bridge-controlled fields: the bridge injects `safe_mode=false` and `hide_watermark=true` for image generation, selects binary return behavior from `variants`, and injects `safe_mode=false` for image editing.
 
+`variants: 1` is backward-compatible and resolves to one binary image, but the builder deliberately omits `variants` from the provider payload. Values `2`–`4` use JSON response mode and produce ordered, separately named artifacts.
+
 Before a charged queued request, set:
 
 ```json
@@ -172,6 +195,8 @@ Interpret outcomes:
 - `consent_approval_required`: Show the exact Venice `policy_text` and `consent_version` carried in the `consent_required` payload. Wait for explicit confirmation, then run `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>` and resubmit the same media request. Setting `attestations.seedance_face_consent=true` on the manifest alone is not a substitute.
 - `timed_out`: Do not queue a duplicate. Use the queue ID with `video.retrieve` or `audio.retrieve`.
 - `error`: Report status code, request ID, and provider message. Do not claim credits were or were not charged unless the response states it.
+
+If a locally readable image receives a generic incomplete/corrupt provider error, first verify file readability, detected MIME and dimensions, endpoint-specific encoding, and endpoint constraints. `image.upscale` is raw base64 on the wire; edit and video inputs retain their data-URL/URL contracts. Re-encode only with evidence that the file structure is incompatible. Stop after a repeated identical provider failure; never perform unbounded or automatic charged retries.
 
 ## Seedance 2.0 workflow rules
 

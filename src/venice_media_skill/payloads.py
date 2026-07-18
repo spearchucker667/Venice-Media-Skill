@@ -28,7 +28,7 @@ from typing import Any
 from .errors import PayloadValidationError, ReservedParameterError
 from .request import MediaRequest, allowed_parameter_names
 from .reserved import RESERVED_PARAMETERS, RESERVED_PROVIDER_KEYS, RESERVED_TOP_LEVEL_KEYS
-from .util import normalize_media_input, sha256_file, stable_json
+from .util import normalize_media_as_raw_base64, normalize_media_input, sha256_file, stable_json
 
 # Re-exported for any caller that already imports from this module.
 __all__ = [
@@ -36,6 +36,7 @@ __all__ = [
     "RESERVED_PROVIDER_KEYS",
     "RESERVED_TOP_LEVEL_KEYS",
     "CanonicalPayload",
+    "ImageGenerationOutputPlan",
     "assert_no_reserved_parameters",
     "build_audio_queue",
     "build_audio_quote",
@@ -57,6 +58,42 @@ __all__ = [
 
 
 @dataclass(slots=True, frozen=True)
+class ImageGenerationOutputPlan:
+    """Validated logical output count and provider response mode.
+
+    ``variants`` is the canonical user-facing count. Venice permits that
+    field only in JSON mode, so the logical default of one image is omitted
+    from the wire body while ``return_binary=true`` is sent explicitly.
+    """
+
+    image_count: int
+    return_binary: bool
+
+    @classmethod
+    def from_parameters(cls, parameters: Mapping[str, Any]) -> ImageGenerationOutputPlan:
+        image_count = parameters.get("variants", 1)
+        if isinstance(image_count, bool) or not isinstance(image_count, int) or not 1 <= image_count <= 4:
+            raise PayloadValidationError("parameters.variants must be an integer in [1, 4].")
+        return cls(image_count=image_count, return_binary=image_count == 1)
+
+    def wire_fields(self) -> dict[str, int | bool]:
+        fields: dict[str, int | bool] = {"return_binary": self.return_binary}
+        if not self.return_binary:
+            fields["variants"] = self.image_count
+        return fields
+
+    def diagnostic(self) -> dict[str, int | str]:
+        output: dict[str, int | str] = {
+            "image_count": self.image_count,
+            "response_mode": "binary" if self.return_binary else "json",
+            "variants_field": "omitted" if self.return_binary else "included",
+        }
+        if not self.return_binary:
+            output["variants"] = self.image_count
+        return output
+
+
+@dataclass(slots=True, frozen=True)
 class CanonicalPayload:
     """Operation-specific provider body and its canonical hash.
 
@@ -70,6 +107,7 @@ class CanonicalPayload:
     payload: Mapping[str, Any]
     hash: str
     input_hashes: tuple[str, ...]
+    image_output_plan: ImageGenerationOutputPlan | None = None
 
 
 def _canonical_hash(payload: Mapping[str, Any]) -> str:
@@ -157,6 +195,8 @@ def build_image_generate(request: MediaRequest) -> CanonicalPayload:
         raise ValueError("image.generate requires model and prompt")
     allowed = allowed_parameter_names("image.generate")
     body = _copy_only(request.parameters, allowed)
+    output_plan = ImageGenerationOutputPlan.from_parameters(body)
+    body.pop("variants", None)
     payload: dict[str, Any] = {
         "model": request.model,
         "prompt": request.prompt,
@@ -165,12 +205,14 @@ def build_image_generate(request: MediaRequest) -> CanonicalPayload:
     }
     payload.update(body)
     payload.setdefault("format", "webp")
-    variants = payload.get("variants", 1)
-    if isinstance(variants, bool) or not isinstance(variants, int) or not 1 <= variants <= 4:
-        raise ValueError("parameters.variants must be an integer in [1, 4].")
-    payload["variants"] = variants
-    payload["return_binary"] = variants == 1
-    return _wrap(request, "image.generate", "/image/generate", payload)
+    payload.update(output_plan.wire_fields())
+    return _wrap(
+        request,
+        "image.generate",
+        "/image/generate",
+        payload,
+        image_output_plan=output_plan,
+    )
 
 
 def build_image_edit(request: MediaRequest) -> CanonicalPayload:
@@ -218,7 +260,7 @@ def build_image_upscale(request: MediaRequest) -> CanonicalPayload:
     body = _copy_only(request.parameters, allowed)
     image = _require_single_string_input(request, "image")
     payload: dict[str, Any] = {
-        "image": normalize_media_input(image),
+        "image": normalize_media_as_raw_base64(image),
     }
     payload.setdefault("scale", 2)
     payload["scale"] = _check_scale(body.get("scale", 2))
@@ -392,13 +434,21 @@ def append_consents(seedance: Mapping[str, Any], into: dict[str, Any]) -> None:
     into["consents"] = dict(seedance)
 
 
-def _wrap(request: MediaRequest, operation: str, endpoint: str, payload: dict[str, Any]) -> CanonicalPayload:
+def _wrap(
+    request: MediaRequest,
+    operation: str,
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    image_output_plan: ImageGenerationOutputPlan | None = None,
+) -> CanonicalPayload:
     return CanonicalPayload(
         operation=operation,
         endpoint=endpoint,
         payload=payload,
         hash=_canonical_hash(payload),
         input_hashes=_input_hashes(request),
+        image_output_plan=image_output_plan,
     )
 
 

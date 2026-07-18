@@ -38,6 +38,31 @@ def test_plan_without_model_requests_model_selection() -> None:
     assert result["questions"][0]["options"][0]["privacy"] == "private"
 
 
+@pytest.mark.parametrize(
+    ("catalog_model", "expected"),
+    [
+        ({"id": "lustify-v7", "type": "image", "model_spec": {"offline": True}}, "offline"),
+        ({"id": "lustify-v7", "type": "text", "model_spec": {"offline": False}}, "unsupported"),
+    ],
+)
+def test_explicit_model_rejects_offline_or_unsupported(catalog_model: dict[str, Any], expected: str) -> None:
+    with pytest.raises(ValueError, match=expected):
+        Planner(FakeCatalog(catalog_model)).plan(  # type: ignore[arg-type]
+            "image.generate",
+            model="lustify-v7",
+            prompt="A photorealistic portrait of a 50-year-old adult woman.",
+        )
+
+
+def test_explicit_missing_model_is_not_silently_substituted() -> None:
+    with pytest.raises(ValueError, match="missing"):
+        Planner(FakeCatalog(model("different-model", {}))).plan(  # type: ignore[arg-type]
+            "image.generate",
+            model="lustify-v7",
+            prompt="A photorealistic portrait of a 50-year-old adult woman.",
+        )
+
+
 def test_image_plan_uses_model_constraints() -> None:
     catalog = FakeCatalog(
         model(

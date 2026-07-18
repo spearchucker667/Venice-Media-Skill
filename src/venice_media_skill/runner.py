@@ -679,6 +679,8 @@ class MediaRunner:
             "input_hashes": list(canonical.input_hashes),
             "api_request": redact_data(safe_payload),
         }
+        if canonical.image_output_plan is not None:
+            out["output_plan"] = canonical.image_output_plan.diagnostic()
         if include_inputs:
             out["input_summary"] = _summarize_inputs(request)
         return out
@@ -878,7 +880,13 @@ def _sanitize_api_request(operation: str, payload: Mapping[str, Any]) -> dict[st
     """
     cleaned: dict[str, Any] = {}
     for key, value in payload.items():
-        if isinstance(value, str) and value.startswith("data:"):
+        if operation == "image.upscale" and key == "image" and isinstance(value, str):
+            cleaned[key] = {
+                "kind": "inline_media",
+                "encoding": "raw_base64",
+                "redacted": True,
+            }
+        elif isinstance(value, str) and value.startswith("data:"):
             mime = value[5:].split(";", 1)[0] or "application/octet-stream"
             cleaned[key] = {
                 "kind": "local_media",

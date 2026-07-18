@@ -151,6 +151,7 @@
             "type": "string"
           },
           "variants": {
+            "description": "Canonical image count (1-4). The bridge uses binary response mode and omits the wire-level variants field for one image; counts 2-4 use JSON response mode and serialize variants.",
             "maximum": 4,
             "minimum": 1,
             "type": "integer"
@@ -661,6 +662,7 @@
                 "type": "string"
               },
               "variants": {
+                "description": "Canonical image count (1-4). The bridge uses binary response mode and omits the wire-level variants field for one image; counts 2-4 use JSON response mode and serialize variants.",
                 "maximum": 4,
                 "minimum": 1,
                 "type": "integer"

@@ -60,8 +60,8 @@ if [[ "$REMOVE_BRIDGE" -eq 1 ]]; then
   DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
   BIN_HOME="${XDG_BIN_HOME:-$HOME/.local/bin}"
   rm -rf "$DATA_HOME/venice-media-skill"
-  rm -f "$BIN_HOME/venice-media"
-  removed+=("bridge venv" "launcher")
+  rm -f "$BIN_HOME/venice-media" "$BIN_HOME/venice-media-keychain"
+  removed+=("bridge venv" "launcher" "Keychain launcher")
 fi
 
 remove_skill() {

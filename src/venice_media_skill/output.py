@@ -6,7 +6,6 @@ import base64
 import errno
 import json
 import os
-import re
 import shutil
 import tempfile
 import uuid
@@ -135,7 +134,7 @@ class ArtifactWriter:
             # Phase 1: write everything into the staging subdir without
             # touching the final targets.  A failure here leaves no
             # published artifacts — rollback wipes the staging dir.
-            for blob, artifact_path, sidecar in entries:
+            for index, (blob, artifact_path, sidecar) in enumerate(entries, start=1):
                 staged_artifact = staging_subdir / artifact_path.name
                 if blob.file_path is not None:
                     _stage_file_blob(blob, staged_artifact)
@@ -152,6 +151,9 @@ class ArtifactWriter:
                     "bytes": bytes_written,
                     "sha256": sha256,
                 }
+                if len(entries) > 1:
+                    artifact["variant_index"] = index
+                    artifact["variant_count"] = len(entries)
                 staged_sidecar: Path | None = None
                 if sidecar is not None:
                     staged_sidecar = staging_subdir / sidecar.name
@@ -411,17 +413,19 @@ def _extract_blobs(response: ApiResponse) -> list[_Blob]:
     return _extract_json_blobs(response.json_data)
 
 
-def _extract_json_blobs(payload: Any) -> list[_Blob]:
+def _extract_json_blobs(payload: Any, *, expect_media_string: bool = False) -> list[_Blob]:
     results: list[_Blob] = []
     if isinstance(payload, str):
         if payload.startswith("data:"):
             mime, blob = decode_data_url(payload)
             fast_validate_content_type(blob, mime)
             results.append(_Blob(content_type=mime, content=blob, observed=len(blob)))
+        elif expect_media_string:
+            results.append(_blob_from_raw_base64(payload, context="images array"))
         return results
     if isinstance(payload, list):
         for item in payload:
-            results.extend(_extract_json_blobs(item))
+            results.extend(_extract_json_blobs(item, expect_media_string=expect_media_string))
         return results
     if not isinstance(payload, dict):
         return results
@@ -439,35 +443,7 @@ def _extract_json_blobs(payload: Any) -> list[_Blob]:
                     )
                 )
                 continue
-            if _looks_like_base64(value):
-                try:
-                    blob = base64.b64decode(value, validate=True)
-                except ValueError as exc:
-                    raise ContentValidationError(
-                        declared="",
-                        detected=None,
-                        reason="invalid base64 payload",
-                    ) from exc
-                detected = detected_content_type(blob)
-                if detected is None:
-                    raise ContentValidationError(
-                        declared="",
-                        detected=None,
-                        reason=(
-                            f"base64 payload under '{key}' did not match a known "
-                            "media signature; refusing to assert a content type "
-                            "from the key name"
-                        ),
-                    )
-                fast_validate_content_type(blob, detected)
-                results.append(
-                    _Blob(
-                        content_type=detected,
-                        content=blob,
-                        sha256=_sha256(blob),
-                        observed=len(blob),
-                    )
-                )
+            results.append(_blob_from_raw_base64(value, context=f"'{key}' field"))
         elif key == "url" and isinstance(value, str) and value.startswith("data:"):
             mime, blob = decode_data_url(value)
             fast_validate_content_type(blob, mime)
@@ -479,19 +455,39 @@ def _extract_json_blobs(payload: Any) -> list[_Blob]:
                     observed=len(blob),
                 )
             )
-        elif key in {"data", "images", "results", "output"}:
+        elif key == "images":
+            results.extend(_extract_json_blobs(value, expect_media_string=True))
+        elif key in {"data", "results", "output"}:
             results.extend(_extract_json_blobs(value))
     return results
 
 
-def _looks_like_base64(value: str) -> bool:
-    if len(value) < 4:
-        return False
-    if len(value) % 4 != 0:
-        return False
-    if not re.fullmatch(r"[A-Za-z0-9+/=]*", value):
-        return False
-    return bool(re.search(r"[A-Za-z0-9]", value))
+def _blob_from_raw_base64(value: str, *, context: str) -> _Blob:
+    try:
+        blob = base64.b64decode(value, validate=True)
+    except ValueError as exc:
+        raise ContentValidationError(
+            declared="",
+            detected=None,
+            reason=f"invalid base64 payload in {context}",
+        ) from exc
+    detected = detected_content_type(blob)
+    if detected is None:
+        raise ContentValidationError(
+            declared="",
+            detected=None,
+            reason=(
+                f"base64 payload in {context} did not match a known media signature; "
+                "refusing to assert a content type from its response field"
+            ),
+        )
+    fast_validate_content_type(blob, detected)
+    return _Blob(
+        content_type=detected,
+        content=blob,
+        sha256=_sha256(blob),
+        observed=len(blob),
+    )
 
 
 def _sha256(data: bytes) -> str:

@@ -67,11 +67,15 @@ def main(dist_dir: str = "dist") -> int:
         return 1
 
     violations: list[str] = []
+    required_member_suffix = "/scripts/venice-media-keychain"
+    found_required_launcher = False
     try:
         with tarfile.open(sdist, mode="r:gz") as tf:
             for member in tf.getmembers():
                 # Relative path within the archive root.
                 rel = member.name.split(":", 1)[-1].lstrip("./")
+                if member.name.endswith(required_member_suffix):
+                    found_required_launcher = member.isfile() and bool(member.mode & 0o100)
 
                 for token in FORBIDDEN_TOKENS:
                     needle = token.lstrip("/")
@@ -81,6 +85,8 @@ def main(dist_dir: str = "dist") -> int:
                     target = member.linkname
                     if _is_symlink_escape(target):
                         violations.append(f"drift[symlink]: {sdist.name}:{member.name} -> {target!r}")
+            if not found_required_launcher:
+                violations.append("drift[required]: scripts/venice-media-keychain missing or not executable")
     except tarfile.TarError as exc:
         print(f"inspect-sdist: failed to read {sdist}: {exc}", file=sys.stderr)
         return 1

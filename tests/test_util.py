@@ -7,6 +7,7 @@ import pytest
 from venice_media_skill.errors import RequestValidationError
 from venice_media_skill.util import (
     decode_data_url,
+    normalize_media_as_raw_base64,
     normalize_media_input,
     path_to_data_url,
     redact_data,
@@ -46,3 +47,15 @@ def test_redaction_removes_credentials() -> None:
     redacted = redact_data(payload)
     assert redacted["authorization"] == "[REDACTED]"
     assert "abcdefghijklmnopqrstuvwxyz" not in redacted["nested"]
+
+
+def test_redaction_removes_inline_raw_base64() -> None:
+    encoded = "QUJD" * 40
+    assert redact_data({"image": encoded}) == {"image": "[REDACTED_MEDIA]"}
+
+
+def test_raw_base64_normalization_error_does_not_echo_input() -> None:
+    malformed = "sensitive-but-malformed-%%%"
+    with pytest.raises(RequestValidationError) as exc_info:
+        normalize_media_as_raw_base64(malformed)
+    assert malformed not in str(exc_info.value)

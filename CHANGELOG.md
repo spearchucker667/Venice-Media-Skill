@@ -32,6 +32,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | Fail-closed downloads | `VeniceClient.download_public_url` no longer follows redirects and validates every hop before issuing the next request. |
 | `reserved.py` constants | Shared set of reserved / transport-control keys that both `request.py` and `payloads.py` consult. |
 | `planning` fields split | Planner now returns `{parameters: {...}, execution: {...}}` keeping provider defaults and execution policy clearly separated. Music plans emit the canonical `parameters.lyrics_prompt` and `parameters.force_instrumental` fields. |
+| Image response-mode planning | A typed output plan maps one image to binary mode with `variants` omitted and counts 2–4 to JSON mode with `variants` preserved. Native JSON `images` arrays are decoded transactionally with ordered variant metadata. |
 
 ### 🧪 Tests
 
@@ -44,6 +45,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | `TestConsentChallengeStateMachine` | Challenge persisted, recoverable, blocked-until-approval, attached-only-on-match, unacknowledged policy rejected. |
 | `TestQuoteApprovalBinding` | Single-use enforcement, hash-mismatch detected, max-cost breach rejected. |
 | `TestContractAlignment` | `model` (canonical) emitted, not `modelId`; upscale uses `creativity` + `scale` only; quote hash equals queue hash. |
+| `test_image_generate_response_modes.py` | Exact serialized image payloads, mocked 400 regression, binary/JSON transport behavior, ordered multi-artifact output, malformed-response atomicity, prompt/model preservation, and manifest compatibility. |
 
 ### 📋 Audit Remediation
 

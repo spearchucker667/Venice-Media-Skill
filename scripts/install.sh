@@ -75,6 +75,14 @@ LAUNCHER
 chmod 0755 "$LAUNCHER_STAGING"
 mv -f "$LAUNCHER_STAGING" "$LAUNCHER"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  KEYCHAIN_LAUNCHER="$BIN_HOME/venice-media-keychain"
+  KEYCHAIN_STAGING="$KEYCHAIN_LAUNCHER.staging.$$"
+  cp "$ROOT/scripts/venice-media-keychain" "$KEYCHAIN_STAGING"
+  chmod 0700 "$KEYCHAIN_STAGING"
+  mv -f "$KEYCHAIN_STAGING" "$KEYCHAIN_LAUNCHER"
+fi
+
 refuse_if_destination_invalid() {
   local destination="$1"
   if [[ -L "$destination" ]]; then
@@ -167,3 +175,11 @@ Ensure this directory is on PATH:
 Then export VENICE_API_KEY in the shell that launches your AI CLI and run:
   venice-media doctor --online
 EOF2
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  cat <<EOF2
+
+For a sanitized agent environment, store the key in macOS Keychain and run:
+  venice-media-keychain doctor --online
+EOF2
+fi

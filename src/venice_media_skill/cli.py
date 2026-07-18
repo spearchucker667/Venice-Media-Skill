@@ -561,10 +561,32 @@ def _installation_diagnostics() -> dict[str, Any]:
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     package_location = str(Path(__file__).resolve().parent)
     editable = "site-packages" not in package_location and "dist-packages" not in package_location
+    keychain_launcher = shutil.which("venice-media-keychain")
+    keychain_target: str | None = None
+    keychain_error: str | None = None
+    if keychain_launcher:
+        from .keychain import resolve_bridge_executable
+
+        try:
+            keychain_target = resolve_bridge_executable(launcher_path=keychain_launcher)
+        except ValueError as exc:
+            keychain_error = str(exc)
+    target_differs = False
+    if active and keychain_target:
+        try:
+            target_differs = not os.path.samefile(active, keychain_target)
+        except OSError:
+            target_differs = Path(active).resolve() != Path(keychain_target).resolve()
     return {
         "status": "ok" if not missing else "attention_required",
         "active_executable": active,
         "installations": candidates,
+        "keychain_launcher": {
+            "path": keychain_launcher,
+            "target": keychain_target,
+            "target_differs_from_active_cli": target_differs,
+            "resolution_error": keychain_error,
+        },
         "runtime": {
             "python_interpreter": sys.executable,
             "package_version": __version__,

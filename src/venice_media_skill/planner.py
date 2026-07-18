@@ -55,6 +55,23 @@ class Planner:
             raise ValueError(f"Model catalog is required for operation: {operation}")
         models = self.catalog.list(model_type, refresh=refresh_models)
         selected = self.catalog.get(model, model_type) if model else None
+        if model is not None:
+            if selected is None:
+                raise ValueError(f"Requested model {model!r} is missing from the live Venice catalog.")
+            selected_id = selected.get("id")
+            if selected_id != model:
+                raise ValueError(
+                    f"Requested model {model!r} resolved unexpectedly to {selected_id!r}; refusing substitution."
+                )
+            selected_type = selected.get("type")
+            if isinstance(selected_type, str) and selected_type != model_type:
+                raise ValueError(
+                    f"Requested model {model!r} is unsupported for {operation}; "
+                    f"catalog type is {selected_type!r}, expected {model_type!r}."
+                )
+            selected_spec = _dict_value(selected, "model_spec")
+            if selected_spec.get("offline") is True:
+                raise ValueError(f"Requested model {model!r} is currently offline.")
         questions: list[dict[str, Any]] = []
         if selected is None:
             questions.append(

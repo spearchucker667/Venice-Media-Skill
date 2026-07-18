@@ -10,17 +10,20 @@ Do not switch the host's model provider. The host agent uses shell calls to the 
 
 ```bash
 venice-media doctor
+venice-media doctor --online
 ```
 
-A missing key should be corrected in the host shell. The user should not paste the key into the model conversation.
+A missing key should be corrected in the host shell. The user should not paste the key into the model conversation. If macOS host sanitization removes the variable, use `venice-media-keychain doctor --online` and then use that launcher consistently for models and execution.
 
 ## 3. Discover current models
 
 ```bash
-venice-media models --type image
+venice-media models --type image --refresh
 ```
 
 Model IDs, capabilities, privacy mode, beta/deprecation metadata, constraints, and pricing can change. Use the live response rather than examples embedded in documentation.
+
+When a model ID is explicitly requested, preserve it exactly. Stop if the refreshed image catalog reports it missing, offline, or under a non-image type; never substitute a different model silently.
 
 ## 4. Ask model-aware questions
 
@@ -50,6 +53,8 @@ Set:
 
 Run it and inspect the `api_request` object. This validates injected defaults and normalized input fields without consuming credits.
 
+For `image.generate`, also inspect `output_plan`. One image must report binary mode with the wire-level `variants` field omitted. Counts 2–4 must report JSON mode and preserve the requested count. Never put `return_binary` in the manifest.
+
 ## 6. Quote charged queued jobs
 
 For video and generated music/audio:
@@ -74,6 +79,8 @@ Then resubmit the unchanged manifest. The bridge attaches the recorded approval 
 The bridge persists the queue ID immediately after a successful queue response. If waiting is enabled, it polls until binary media is available or the local timeout expires.
 
 Do not submit a new generation after timeout. Build a retrieve manifest with the same model and queue ID.
+
+For any repeated identical provider failure, stop. Validate the local file, MIME/dimensions, endpoint-specific wire encoding, and endpoint constraints before considering one explicit retry. Do not spend credits on arbitrary format conversions.
 
 ## 8. Handle consent
 
