@@ -286,7 +286,9 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
     }
     for source, target in mapping.items():
         value = request.inputs.get(source)
-        if isinstance(value, str):
+        if value is not None:
+            if not isinstance(value, str):
+                raise PayloadValidationError(f"inputs.{source} must be a string for video.generate.")
             payload[target] = normalize_media_input(value)
     list_mapping = {
         "reference_images": "reference_image_urls",
@@ -296,7 +298,9 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
     }
     for source, target in list_mapping.items():
         values = request.inputs.get(source)
-        if isinstance(values, list) and all(isinstance(item, str) for item in values):
+        if values is not None:
+            if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+                raise PayloadValidationError(f"inputs.{source} must be a list of strings for video.generate.")
             payload[target] = [normalize_media_input(item) for item in values]
     if "elements" in request.inputs:
         # ``elements`` is a provider control surface — reject unless the

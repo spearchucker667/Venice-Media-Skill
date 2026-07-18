@@ -829,6 +829,39 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "reference_audios"
+                  ]
+                },
+                "then": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "image"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "video"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "reference_images"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "reference_videos"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
             "properties": {
               "audio": {
                 "minLength": 1,
@@ -836,8 +869,28 @@
               },
               "elements": {
                 "items": {
+                  "properties": {
+                    "frontal_image_url": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reference_image_urls": {
+                      "items": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 3,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "video_url": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
                   "type": "object"
                 },
+                "maxItems": 4,
                 "minItems": 1,
                 "type": "array"
               },
@@ -881,6 +934,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
+                "maxItems": 4,
                 "minItems": 1,
                 "type": "array"
               },

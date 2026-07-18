@@ -104,6 +104,14 @@ _LIST_INPUTS: dict[str, set[str]] = {
     },
 }
 
+_VIDEO_SCALAR_INPUTS: Final[frozenset[str]] = frozenset({"image", "end_image", "audio", "video"})
+_VIDEO_STRING_LIST_LIMITS: Final[dict[str, int]] = {
+    "reference_images": 9,
+    "reference_videos": 3,
+    "reference_audios": 3,
+    "scene_images": 4,
+}
+
 
 @dataclass(slots=True)
 class OutputSpec:
@@ -373,7 +381,13 @@ def request_json_schema() -> dict[str, Any]:
 
     def _input_property(key: str) -> dict[str, Any]:
         if key in {"images", "reference_images", "reference_videos", "reference_audios", "scene_images"}:
-            maximum = {"images": 3, "reference_images": 9, "reference_videos": 3, "reference_audios": 3}.get(key)
+            maximum = {
+                "images": 3,
+                "reference_images": 9,
+                "reference_videos": 3,
+                "reference_audios": 3,
+                "scene_images": 4,
+            }.get(key)
             schema: dict[str, Any] = {
                 "type": "array",
                 "minItems": 1,
@@ -383,7 +397,24 @@ def request_json_schema() -> dict[str, Any]:
                 schema["maxItems"] = maximum
             return schema
         if key == "elements":
-            return {"type": "array", "minItems": 1, "items": {"type": "object"}}
+            return {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "frontal_image_url": {"type": "string", "minLength": 1},
+                        "reference_image_urls": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 3,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "video_url": {"type": "string", "minLength": 1},
+                    },
+                },
+            }
         return {"type": "string", "minLength": 1}
 
     branches: list[dict[str, Any]] = []
@@ -407,6 +438,20 @@ def request_json_schema() -> dict[str, Any]:
         op_required_inputs = _REQUIRED_INPUTS.get(op)
         if op_required_inputs:
             inputs_schema["required"] = sorted(op_required_inputs)
+        if op == "video.generate":
+            inputs_schema["allOf"] = [
+                {
+                    "if": {"required": ["reference_audios"]},
+                    "then": {
+                        "anyOf": [
+                            {"required": ["image"]},
+                            {"required": ["video"]},
+                            {"required": ["reference_images"]},
+                            {"required": ["reference_videos"]},
+                        ]
+                    },
+                }
+            ]
         branches.append(
             {
                 "if": {
@@ -601,6 +646,51 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
                 raise PayloadValidationError(f"inputs.{key} must be a list for {operation}.")
             if operation == "image.multi_edit" and not all(isinstance(item, str) for item in inputs[key]):
                 raise PayloadValidationError(f"inputs.{key} must be a list of strings for {operation}.")
+    if operation == "video.generate":
+        _validate_video_inputs(inputs)
+
+
+def _validate_video_inputs(inputs: Mapping[str, Any]) -> None:
+    for key in _VIDEO_SCALAR_INPUTS:
+        if key in inputs and (not isinstance(inputs[key], str) or not inputs[key].strip()):
+            raise PayloadValidationError(f"inputs.{key} must be a non-empty string for video.generate.")
+    for key, maximum in _VIDEO_STRING_LIST_LIMITS.items():
+        if key not in inputs:
+            continue
+        values = inputs[key]
+        if not isinstance(values, list) or not values:
+            raise PayloadValidationError(f"inputs.{key} must be a non-empty list for video.generate.")
+        if len(values) > maximum:
+            raise PayloadValidationError(f"inputs.{key} accepts at most {maximum} items for video.generate.")
+        if not all(isinstance(item, str) and item.strip() for item in values):
+            raise PayloadValidationError(f"inputs.{key} must contain only non-empty strings for video.generate.")
+    if "reference_audios" in inputs and not any(
+        key in inputs for key in ("image", "video", "reference_images", "reference_videos")
+    ):
+        raise PayloadValidationError(
+            "inputs.reference_audios must be paired with an image or video reference for video.generate."
+        )
+    if "elements" not in inputs:
+        return
+    elements = inputs["elements"]
+    if not isinstance(elements, list) or not 1 <= len(elements) <= 4:
+        raise PayloadValidationError("inputs.elements must contain 1-4 objects for video.generate.")
+    for index, element in enumerate(elements):
+        if not isinstance(element, Mapping):
+            raise PayloadValidationError(f"inputs.elements[{index}] must be an object for video.generate.")
+        for key in ("frontal_image_url", "video_url"):
+            value = element.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise PayloadValidationError(f"inputs.elements[{index}].{key} must be a non-empty string.")
+        references = element.get("reference_image_urls")
+        if references is not None and (
+            not isinstance(references, list)
+            or not 1 <= len(references) <= 3
+            or not all(isinstance(item, str) and item.strip() for item in references)
+        ):
+            raise PayloadValidationError(
+                f"inputs.elements[{index}].reference_image_urls must contain 1-3 non-empty strings."
+            )
 
 
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {

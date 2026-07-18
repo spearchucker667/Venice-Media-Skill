@@ -48,6 +48,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 ### 📋 Audit Remediation
 
 - Multi-artifact publication now rolls back earlier final renames and restores overwritten artifacts and metadata sidecars when a later synchronous publish step fails. Incomplete rollback retains its transaction directory and reports the recovery path.
+- Paid video input validation now matches the generated schema for scalar media, reference-list limits, scene images, and structured elements; malformed supplied inputs fail closed instead of disappearing from the queue payload.
 - 2026-07-18 remediation audit tracked 28 initial findings (VMS-001 through VMS-028); a follow-up deep audit identified additional release blockers now tracked in subsequent remediation entries.
 - New or changed files: `consent.py`, `errors.py`, `installer.py`, `jobs.py`, `output.py`, `payloads.py`, `planner.py`, `request.py`, `runner.py`, `util.py`, `cli.py`, `config.py`, `catalog.py`, `README.md`, `pyproject.toml`, CI workflows, release workflow, install scripts, OpenAPI snapshot, `verify-release.py`, `export-source.sh`, `verify-bundled-assets.py`.
 - 260 passed, 3 skipped, 82.49% branch coverage; mypy strict for all 17 source files.
