@@ -129,7 +129,6 @@ def _seed_quote(
         raise RuntimeError(f"unsupported operation for quote seeding: {request_obj.operation}")
     store.record(
         operation=canonical.operation,
-        model=request_obj.model or "unknown",
         payload_hash=canonical.hash,
         quote_response=quote_response or {"quote": 1.0},
         max_cost=10.0,
@@ -432,7 +431,6 @@ def test_video_queue_with_quote_approval_proceeds(tmp_path: Path) -> None:
     canonical = build_video_queue(request_obj)
     quote_store.record(
         operation=request_obj.operation,
-        model=request_obj.model or "",
         payload_hash=canonical.hash,
         quote_response={"quote": 0.1},
         max_cost=0.5,
@@ -463,7 +461,6 @@ def test_video_quote_max_cost_enforced(tmp_path: Path) -> None:
     canonical = build_video_queue(request_obj)
     quote_store.record(
         operation=request_obj.operation,
-        model=request_obj.model or "",
         payload_hash=canonical.hash,
         quote_response={"quote": 0.5},
         max_cost=2.0,

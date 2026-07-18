@@ -54,9 +54,14 @@ Exit codes:
 
 | Code | Meaning |
 |---:|---|
-| 0 | Command completed and emitted a normal status, including `approval_required` or `timed_out`. |
+| 0 | Command completed and emitted a normal status (e.g. `completed`, `queued`, `timed_out`). |
 | 2 | Local configuration, validation, or filesystem failure. |
 | 3 | Venice API error. |
-| 4 | Seedance consent required. |
+| 4 | Venice returned `409 needs_consent` for Seedance face-bearing media. Run `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>` once the user reviews the policy text. |
+| 5 | Consent approval recorded but the bridge refused to pair it with the queue request (e.g. hash mismatch). |
+| 6 | Quote approval required (paid queued operation). Run `venice-media approve-quote <operation> <payload_hash> --quote <file> --max-cost <USD>` after the user confirms the price. |
+| 7 | Network-safety violation (e.g. absolute URL, scheme-relative path, non-HTTPS, private IP). |
+| 8 | Quote approval hash no longer matches the queued payload. Resubmit a fresh quote. |
+| 9 | Transport error (DNS, TCP, TLS). |
 
 A non-interactive wrapper must preserve stderr and exit code, then parse stdout only when exit code is zero.

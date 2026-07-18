@@ -16,9 +16,11 @@ queue time causes :class:`~venice_media_skill.errors.QuoteApprovalMismatch`.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import secrets
+import socket
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -37,32 +39,130 @@ _LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or (
     "/tmp/venice-media-locks" if Path("/tmp").exists() else os.environ.get("TEMP", str(Path.home()))
 )
 
+# How long a lock can sit untouched before we attempt stale-recovery.
+_LOCK_STALE_AFTER_SECONDS: Final[float] = 30 * 60
+
+
+def _lock_record_body(host: str, pid: int) -> str:
+    """Body written into a freshly-created lock file."""
+    return f"host={host}\npid={pid}\nacquired_at={int(time.time())}\n"
+
+
+def _parse_lock_record(body: str) -> dict[str, str] | None:
+    """Parse the lock record; return ``None`` if the record is malformed."""
+    parsed: dict[str, str] = {}
+    for line in body.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        parsed[key.strip()] = value.strip()
+    if not {"host", "pid", "acquired_at"}.issubset(parsed):
+        return None
+    return parsed
+
 
 def _get_lock_path(path: Path) -> Path:
-    """Get the lock file path for a given data file."""
-    return Path(_LOCK_DIR) / (path.name + ".lock")
+    """Resolve the lock-file path for ``path``.
+
+    The lock file name encodes the basename plus a short hash of the
+    fully-resolved file path so two identical-named state files in
+    different directories cannot accidentally share a lock.
+    """
+    resolved = str(path.expanduser().resolve())
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+    return Path(_LOCK_DIR) / f"{path.name}.{digest}.lock"
 
 
 def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> None:
-    """Acquire a file-based lock. Works on both Unix and Windows."""
+    """Acquire a file-based lock. Works on both Unix and Windows.
+
+    Writes PID/host/started-at into the lock body so a stale lock can be
+    recovered when the owning process no longer exists.
+    """
     lock_path = _get_lock_path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    host = socket.gethostname() if hasattr(socket, "gethostname") else "unknown"
+    pid = os.getpid()
+    body = _lock_record_body(host, pid).encode("utf-8")
     start = time.monotonic()
+    stale_warned = False
     while True:
         try:
-            # Use atomic file creation for exclusive lock
             if exclusive:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(body)
                 return
-            # For shared lock, just check if lock file exists
             if not lock_path.exists():
                 return
         except (FileExistsError, PermissionError, OSError):
             pass
+        # Stale-lock recovery: if the holder is on this host and the
+        # process is gone, OR the lock is older than 30 minutes, we
+        # steal it. Cross-host locks are not stolen unless expired.
+        if exclusive and lock_path.exists() and _try_stale_recovery(lock_path):
+            stale_warned = True
+            continue
         if time.monotonic() - start > timeout:
-            raise TimeoutError(f"Could not acquire lock on {path} within {timeout}s")
+            raise TimeoutError(
+                f"Could not acquire lock on {path} within {timeout}s "
+                f"(host={host}, pid={pid}, stale_warning={stale_warned})"
+            )
         time.sleep(0.05)
+
+
+def _try_stale_recovery(lock_path: Path) -> bool:
+    """Attempt to remove ``lock_path`` when it is verifiably stale.
+
+    Returns ``True`` if the lock was successfully cleared (the caller
+    should immediately retry). Returns ``False`` if the lock is fresh
+    and held by a live process or carried an unparseable record.
+    """
+    try:
+        body = lock_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    record = _parse_lock_record(body)
+    if record is None:
+        # Unparseable lock records always trigger recovery — preserve
+        # a snapshot only when the contents cannot be parsed at all.
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
+        return True
+    try:
+        age = time.time() - float(record.get("acquired_at", "0"))
+    except ValueError:
+        age = float("inf")
+    if age >= _LOCK_STALE_AFTER_SECONDS:
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
+        return True
+    pid_str = record.get("pid", "")
+    host = record.get("host", "")
+    try:
+        pid = int(pid_str)
+    except ValueError:
+        return False
+    if host and host != (socket.gethostname() if hasattr(socket, "gethostname") else "unknown"):
+        return False  # cross-host; do not steal
+    if pid <= 0:
+        return False
+    if _pid_alive(pid):
+        return False
+    with contextlib.suppress(OSError):
+        lock_path.unlink()
+    return True
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check for ``pid`` (POSIX + Windows)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return True
 
 
 def _release_lock(path: Path, exclusive: bool = True) -> None:
@@ -252,7 +352,6 @@ class QuoteApprovalStore:
         self,
         *,
         operation: str,
-        model: str,
         payload_hash: str,
         quote_response: Mapping[str, Any],
         max_cost: float,
@@ -260,7 +359,6 @@ class QuoteApprovalStore:
         approval = QuoteApproval(
             approval_id=new_approval_id(),
             operation=operation,
-            model=model,
             payload_hash=payload_hash,
             quote_response=dict(quote_response),
             max_cost=float(max_cost),
@@ -336,7 +434,6 @@ def _serialize_quote_approval(approval: QuoteApproval) -> dict[str, Any]:
     return {
         "approval_id": approval.approval_id,
         "operation": approval.operation,
-        "model": approval.model,
         "payload_hash": approval.payload_hash,
         "quote_response": approval.quote_response,
         "max_cost": approval.max_cost,

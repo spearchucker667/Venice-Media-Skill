@@ -24,7 +24,7 @@ When `$request` is empty, use the current user message.
 2. Never invent model capabilities, model IDs, prices, supported sizes, durations, voices, or constraints. Query the live model catalog.
 3. Image generation defaults are `safe_mode=false` and `hide_watermark=true`. Do not ask the user about these defaults unless they ask to change them. Venice may still ignore watermark settings for some content.
 4. Do not bypass provider or platform policy failures. Report API errors accurately.
-5. Never assert Seedance face-media consent on the user's behalf. Only set `attestations.seedance_face_consent=true` after the user explicitly confirms that every depicted likeness is theirs or legally authorized and accepts the exact policy text returned by Venice.
+5. Never assert Seedance face-media consent on the user's behalf. The bridge stores a `consent_required` challenge (with a `challenge_id`) and only attaches the consents body to the queue request after the user runs `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>`. The boolean `attestations.seedance_face_consent` flag on the manifest is informational only — the CLI does not accept a value of `true` as consent.
 6. For video and queued audio/music, request a quote first unless the user explicitly supplied an approved budget or explicitly instructed immediate generation with known cost.
 7. Treat local media as sensitive. Do not upload unrelated files. Resolve explicit paths only.
 8. Keep stdout machine-readable by using the CLI's JSON output. Parse the result; do not guess success from process exit alone.
@@ -117,12 +117,20 @@ Before a charged queued request, set:
 ```json
 "execution": {
   "quote_first": true,
-  "confirmed_cost": false,
   "wait": true
 }
 ```
 
-Run the manifest. If status is `approval_required`, show the quote, request explicit approval, then change only `confirmed_cost` to `true` and rerun.
+Run the manifest. The bridge posts the same canonical payload hash to `/video/quote` or `/audio/quote`. If status is `quote_approval_required` (exit code 6), the runner returns a `quote_approval_required` payload that includes the `payload_hash` and the `quote_response` JSON. Show the quote to the user. After they explicitly approve the cost, record the approval via:
+
+```bash
+echo '<quote_response JSON>' > /tmp/quote.json
+venice-media approve-quote <operation> <payload_hash> \
+  --quote /tmp/quote.json \
+  --max-cost <USD>
+```
+
+Then resubmit the same manifest. `confirmed_cost` is informational and not consulted by the gate. The bridge records the approval, attaches it to the queue request, and posts the queue body with the same canonical hash so the actor cannot accidentally quote a different request than the one queued.
 
 ## Execute
 
@@ -144,8 +152,8 @@ Interpret outcomes:
 
 - `completed`: Return each artifact path and metadata sidecar path.
 - `queued` or `processing`: Return the queue ID and preserve it. Use a retrieve manifest later.
-- `approval_required`: Show the quote and wait for explicit approval.
-- `consent_required`: Show the exact Venice `policy_text`; do not summarize away legal meaning. Ask for explicit confirmation. Then resubmit the same media request with the consent attestation.
+- `quote_approval_required`: Show the `quote_response` returned with the gate output. Wait for explicit user approval, then run `venice-media approve-quote <operation> <payload_hash> --quote <file> --max-cost <USD>` and resubmit the unchanged manifest.
+- `consent_approval_required`: Show the exact Venice `policy_text` and `consent_version` carried in the `consent_required` payload. Wait for explicit confirmation, then run `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>` and resubmit the same media request. Setting `attestations.seedance_face_consent=true` on the manifest alone is not a substitute.
 - `timed_out`: Do not queue a duplicate. Use the queue ID with `video.retrieve` or `audio.retrieve`.
 - `error`: Report status code, request ID, and provider message. Do not claim credits were or were not charged unless the response states it.
 

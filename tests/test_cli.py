@@ -10,7 +10,19 @@ def test_schema_command_emits_json(capsys: object) -> None:
     assert main(["schema"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["title"] == "Venice Media Skill request manifest"
+    assert payload["status"] == "ok"
+    assert payload["meta_valid"] is True
+    assert payload["schema"]["title"] == "Venice Media Skill request manifest"
+
+
+def test_schema_command_writes_to_path(tmp_path: Path, capsys: object) -> None:
+    target = tmp_path / "schema.json"
+    assert main(["schema", "--output", str(target)]) == 0
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.out)
+    assert payload["status"] == "written"
+    assert payload["meta_valid"] is True
+    assert json.loads(target.read_text())["title"] == "Venice Media Skill request manifest"
 
 
 def test_validate_openapi_command(capsys: object) -> None:
@@ -20,6 +32,24 @@ def test_validate_openapi_command(capsys: object) -> None:
     payload = json.loads(captured.out)
     assert payload["status"] == "ok"
     assert payload["missing_required_paths"] == []
+
+
+def test_validate_openapi_missing_paths(tmp_path: Path, capsys: object) -> None:
+    """An OpenAPI document missing required paths must surface as exit code 2."""
+    import yaml
+
+    openapi = {
+        "openapi": "3.1.0",
+        "info": {"title": "minimal", "version": "0.0.1"},
+        "paths": {},
+    }
+    src = tmp_path / "openapi.yaml"
+    src.write_text(yaml.safe_dump(openapi))
+    assert main(["validate-openapi", str(src)]) == 2
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.err)
+    # Payload on stderr carries the typed error.
+    assert payload["status"] == "error"
 
 
 def test_dry_run_cli_without_api_key(tmp_path: Path, monkeypatch: object, capsys: object) -> None:

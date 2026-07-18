@@ -267,11 +267,21 @@ class MediaRequest:
 
 
 def request_json_schema() -> dict[str, Any]:
-    reserved_list = sorted(RESERVED_PARAMETERS)
+    """Generate the JSON Schema for request manifests.
 
-    # Build per-operation parameter schemas
-    param_schemas: dict[str, dict[str, Any]] = {}
-    for op, rule in _PARAM_RULES.items():
+    Produces a Draft 2020-12 schema that is meta-schema valid:
+
+    - Top-level ``allOf`` carries one ``if/then`` block per operation
+      so the discriminator lives at the top level (``operation``)
+      rather than inside ``parameters``.
+    - ``$defs.parameterShapes`` exposes each per-operation parameter
+      schema once and is referenced from each ``then`` clause.
+    - ``parameters.not`` rejects reserved keys at any nested level.
+    """
+    reserved_keys = sorted(RESERVED_PARAMETERS)
+
+    def _build_param_shape(op: str) -> dict[str, Any]:
+        rule = _PARAM_RULES.get(op, {})
         props: dict[str, dict[str, Any]] = {}
         for key in rule.get("strings", set()):
             props[key] = {"type": "string"}
@@ -282,15 +292,29 @@ def request_json_schema() -> dict[str, Any]:
         for key in rule.get("booleans", set()):
             props[key] = {"type": "boolean"}
         props["queue_id"] = {"type": "string"}
-        param_schemas[op] = {
+        return {
             "type": "object",
             "additionalProperties": False,
             "properties": props,
         }
 
-    parameter_options = [{"properties": {**{"operation": {"const": op}}, **param_schemas[op]}} for op in param_schemas]
-    if not parameter_options:
-        parameter_options = [{}]
+    param_shapes: dict[str, dict[str, Any]] = {op: _build_param_shape(op) for op in sorted(SUPPORTED_OPERATIONS)}
+
+    branches: list[dict[str, Any]] = []
+    for op, shape in param_shapes.items():
+        branches.append(
+            {
+                "if": {
+                    "type": "object",
+                    "required": ["operation"],
+                    "properties": {"operation": {"const": op}},
+                },
+                "then": {
+                    "type": "object",
+                    "properties": {"parameters": shape},
+                },
+            }
+        )
 
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -299,6 +323,10 @@ def request_json_schema() -> dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "required": ["operation"],
+        "$defs": {
+            "parameterShapes": param_shapes,
+        },
+        "allOf": branches,
         "properties": {
             "version": {"const": "1", "default": "1"},
             "operation": {"type": "string", "enum": sorted(SUPPORTED_OPERATIONS)},
@@ -308,11 +336,14 @@ def request_json_schema() -> dict[str, Any]:
                 "type": "object",
                 "additionalProperties": False,
                 "not": {
-                    "anyOf": [{"required": [key]} for key in reserved_list],
+                    "anyOf": [{"required": [key]} for key in reserved_keys],
                 },
-                "oneOf": parameter_options,
             },
-            "inputs": {"type": "object", "additionalProperties": True},
+            "inputs": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Operation-driven (see per-operation allowlist in payloads.py)",
+            },
             "output": {
                 "type": "object",
                 "additionalProperties": False,
@@ -469,16 +500,40 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
 
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     "image.generate": {
-        "strings": {"format", "negative_prompt", "style", "aspect_ratio", "resolution"},
-        "integers": {"variants", "seed"},
+        "strings": {
+            "format",
+            "negative_prompt",
+            "style_preset",
+            "aspect_ratio",
+            "resolution",
+            "quality",
+        },
+        "integers": {
+            "variants",
+            "seed",
+            "width",
+            "height",
+            "lora_strength",
+            "steps",
+        },
+        "numbers": {"cfg_scale"},
+        "booleans": {
+            "embed_exif_metadata",
+            "return_binary",
+            "safe_mode",
+            "enable_web_search",
+            "disable_prompt_optimization_thinking",
+        },
     },
     "image.edit": {
-        "strings": {"output_format", "style", "aspect_ratio", "resolution"},
-        "integers": set(),
-    },
-    "image.multi_edit": {
         "strings": {"output_format", "aspect_ratio", "resolution"},
         "integers": set(),
+        "booleans": {"safe_mode"},
+    },
+    "image.multi_edit": {
+        "strings": {"output_format", "aspect_ratio", "resolution", "quality"},
+        "integers": set(),
+        "booleans": {"safe_mode"},
     },
     "image.upscale": {
         "strings": set(),
@@ -491,9 +546,11 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
             "duration",
             "aspect_ratio",
             "resolution",
-            "audio",
+            "negative_prompt",
         },
-        "integers": {"upscale_factor", "seed", "reference_video_total_duration"},
+        "integers": {"upscale_factor"},
+        "numbers": {"reference_video_total_duration"},
+        "booleans": {"audio"},
     },
     "audio.generate": {
         "strings": {"lyrics_prompt", "voice", "language_code"},
@@ -549,8 +606,14 @@ def _validate_parameters(request: MediaRequest) -> None:
             raise PayloadValidationError("parameters.variants must be an integer from 1 through 4.")
         if key == "scale" and int(value) not in (2, 4):
             raise PayloadValidationError("parameters.scale must be 2 or 4.")
-        if key == "upscale_factor" and int(value) not in (2, 4):
-            raise PayloadValidationError("parameters.upscale_factor must be 2 or 4.")
+        if key == "upscale_factor" and int(value) not in (1, 2, 4):
+            raise PayloadValidationError("parameters.upscale_factor must be 1, 2, or 4.")
+        if key in {"width", "height"} and not 0 < int(value) <= 1280:
+            raise PayloadValidationError(f"parameters.{key} must be an integer in (0, 1280].")
+        if key == "lora_strength" and not 0 <= int(value) <= 100:
+            raise PayloadValidationError("parameters.lora_strength must be in [0, 100].")
+        if key == "seed" and not -999999999 <= int(value) <= 999999999:
+            raise PayloadValidationError("parameters.seed must be in [-999999999, 999999999].")
     for key in rule.get("numbers", set()):
         if key not in request.parameters:
             continue
@@ -559,3 +622,9 @@ def _validate_parameters(request: MediaRequest) -> None:
             raise PayloadValidationError(f"parameters.{key} must be a number, not {type(value).__name__}.")
         if key == "creativity" and not 0.0 <= float(value) <= 0.02:
             raise PayloadValidationError("parameters.creativity must be in [0.0, 0.02].")
+        if key == "cfg_scale" and not 0 < float(value) <= 20:
+            raise PayloadValidationError("parameters.cfg_scale must be in (0, 20].")
+        if key == "speed" and not 0.25 <= float(value) <= 4:
+            raise PayloadValidationError("parameters.speed must be in [0.25, 4].")
+        if key == "reference_video_total_duration" and float(value) < 0:
+            raise PayloadValidationError("parameters.reference_video_total_duration must be non-negative.")

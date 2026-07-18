@@ -55,13 +55,19 @@ Run it and inspect the `api_request` object. This validates injected defaults an
 For video and generated music/audio:
 
 ```json
-"execution": {
-  "quote_first": true,
-  "confirmed_cost": false
-}
+"execution": { "quote_first": true }
 ```
 
-The CLI returns `approval_required`. Present the quote exactly. After approval, set `confirmed_cost=true` and rerun the same request.
+The CLI posts the same canonical payload hash to `/video/quote` or `/audio/quote`. If status is `quote_approval_required` (exit code 6), the runner returns a payload that contains the `quote_response` JSON and the `payload_hash`. Present the quote exactly. After approval, record the approval via:
+
+```bash
+echo '<quote_response JSON>' > /tmp/quote.json
+venice-media approve-quote <operation> <payload_hash> \
+  --quote /tmp/quote.json \
+  --max-cost <USD>
+```
+
+Then resubmit the unchanged manifest. The bridge attaches the recorded approval to the queue request and verifies it against the same canonical hash. The boolean `confirmed_cost` field is informational only and is ignored by the gate.
 
 ## 7. Execute and monitor
 
@@ -71,19 +77,21 @@ Do not submit a new generation after timeout. Build a retrieve manifest with the
 
 ## 8. Handle consent
 
-When Seedance detects face-bearing input, Venice may return `409 needs_consent`. Show the exact `policy_text`. Ask the user to confirm all three conditions:
+When Seedance detects face-bearing input, Venice returns `409 needs_consent`. The CLI persists the challenge (with `challenge_id`, `consent_version`, and `policy_text`) and returns `consent_approval_required` (exit code 5). Show the exact `policy_text` and ask the user to confirm all three conditions:
 
 - They accept the returned terms/privacy attestation.
 - The likeness is theirs or they have explicit legal permission from every depicted person.
 - They acknowledge automated screening.
 
-Only then set:
+Only then run:
 
-```json
-"attestations": { "seedance_face_consent": true }
+```bash
+venice-media approve-consent <challenge_id> \
+  --acknowledge-policy \
+  --max-cost <USD>
 ```
 
-Resubmit the same request. Do not add a consent version; Venice sets it server-side.
+Then resubmit the same media request. Setting `attestations.seedance_face_consent=true` on the manifest alone is not a substitute — the bridge only attaches consents because of an approved challenge tied to the specific payload hash.
 
 ## 9. Report exact results
 

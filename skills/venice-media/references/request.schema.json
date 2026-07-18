@@ -1,7 +1,709 @@
 {
+  "$defs": {
+    "parameterShapes": {
+      "audio.generate": {
+        "additionalProperties": false,
+        "properties": {
+          "character_count": {
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "type": "integer"
+          },
+          "force_instrumental": {
+            "type": "boolean"
+          },
+          "language_code": {
+            "type": "string"
+          },
+          "lyrics_optimizer": {
+            "type": "boolean"
+          },
+          "lyrics_prompt": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "speed": {
+            "type": "number"
+          },
+          "voice": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "audio.retrieve": {
+        "additionalProperties": false,
+        "properties": {
+          "queue_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "audio.transcribe": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "response_format": {
+            "type": "string"
+          },
+          "timestamps": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "audio.tts": {
+        "additionalProperties": false,
+        "properties": {
+          "queue_id": {
+            "type": "string"
+          },
+          "response_format": {
+            "type": "string"
+          },
+          "speed": {
+            "type": "number"
+          },
+          "voice": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "image.background_remove": {
+        "additionalProperties": false,
+        "properties": {
+          "queue_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "image.edit": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "safe_mode": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "image.generate": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "cfg_scale": {
+            "type": "number"
+          },
+          "disable_prompt_optimization_thinking": {
+            "type": "boolean"
+          },
+          "embed_exif_metadata": {
+            "type": "boolean"
+          },
+          "enable_web_search": {
+            "type": "boolean"
+          },
+          "format": {
+            "type": "string"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "lora_strength": {
+            "type": "integer"
+          },
+          "negative_prompt": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "return_binary": {
+            "type": "boolean"
+          },
+          "safe_mode": {
+            "type": "boolean"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "steps": {
+            "type": "integer"
+          },
+          "style_preset": {
+            "type": "string"
+          },
+          "variants": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "image.multi_edit": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "safe_mode": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "image.upscale": {
+        "additionalProperties": false,
+        "properties": {
+          "creativity": {
+            "type": "number"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "video.generate": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "audio": {
+            "type": "boolean"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "negative_prompt": {
+            "type": "string"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "reference_video_total_duration": {
+            "type": "number"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "upscale_factor": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "video.retrieve": {
+        "additionalProperties": false,
+        "properties": {
+          "queue_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
   "$id": "https://raw.githubusercontent.com/spearchucker667/venice-media-skill/main/references/request.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "audio.generate"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "character_count": {
+                "type": "integer"
+              },
+              "duration_seconds": {
+                "type": "integer"
+              },
+              "force_instrumental": {
+                "type": "boolean"
+              },
+              "language_code": {
+                "type": "string"
+              },
+              "lyrics_optimizer": {
+                "type": "boolean"
+              },
+              "lyrics_prompt": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "speed": {
+                "type": "number"
+              },
+              "voice": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "audio.retrieve"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "queue_id": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "audio.transcribe"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "language": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "response_format": {
+                "type": "string"
+              },
+              "timestamps": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "audio.tts"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "queue_id": {
+                "type": "string"
+              },
+              "response_format": {
+                "type": "string"
+              },
+              "speed": {
+                "type": "number"
+              },
+              "voice": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "image.background_remove"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "queue_id": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "image.edit"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "aspect_ratio": {
+                "type": "string"
+              },
+              "output_format": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "safe_mode": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "image.generate"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "aspect_ratio": {
+                "type": "string"
+              },
+              "cfg_scale": {
+                "type": "number"
+              },
+              "disable_prompt_optimization_thinking": {
+                "type": "boolean"
+              },
+              "embed_exif_metadata": {
+                "type": "boolean"
+              },
+              "enable_web_search": {
+                "type": "boolean"
+              },
+              "format": {
+                "type": "string"
+              },
+              "height": {
+                "type": "integer"
+              },
+              "lora_strength": {
+                "type": "integer"
+              },
+              "negative_prompt": {
+                "type": "string"
+              },
+              "quality": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "return_binary": {
+                "type": "boolean"
+              },
+              "safe_mode": {
+                "type": "boolean"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "steps": {
+                "type": "integer"
+              },
+              "style_preset": {
+                "type": "string"
+              },
+              "variants": {
+                "type": "integer"
+              },
+              "width": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "image.multi_edit"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "aspect_ratio": {
+                "type": "string"
+              },
+              "output_format": {
+                "type": "string"
+              },
+              "quality": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "safe_mode": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "image.upscale"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "creativity": {
+                "type": "number"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "video.generate"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "aspect_ratio": {
+                "type": "string"
+              },
+              "audio": {
+                "type": "boolean"
+              },
+              "duration": {
+                "type": "string"
+              },
+              "negative_prompt": {
+                "type": "string"
+              },
+              "queue_id": {
+                "type": "string"
+              },
+              "reference_video_total_duration": {
+                "type": "number"
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "upscale_factor": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "video.retrieve"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "queue_id": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
   "properties": {
     "attestations": {
       "additionalProperties": false,
@@ -33,6 +735,10 @@
           "type": "number"
         },
         "quote_first": {
+          "default": true,
+          "type": "boolean"
+        },
+        "skip_quote": {
           "default": false,
           "type": "boolean"
         },
@@ -49,6 +755,7 @@
     },
     "inputs": {
       "additionalProperties": true,
+      "description": "Operation-driven (see per-operation allowlist in payloads.py)",
       "type": "object"
     },
     "model": {
@@ -100,7 +807,206 @@
       "type": "object"
     },
     "parameters": {
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "Authorization"
+            ]
+          },
+          {
+            "required": [
+              "api_key"
+            ]
+          },
+          {
+            "required": [
+              "attestations"
+            ]
+          },
+          {
+            "required": [
+              "audioUrl"
+            ]
+          },
+          {
+            "required": [
+              "audio_url"
+            ]
+          },
+          {
+            "required": [
+              "authorization"
+            ]
+          },
+          {
+            "required": [
+              "consents"
+            ]
+          },
+          {
+            "required": [
+              "downloadUrl"
+            ]
+          },
+          {
+            "required": [
+              "download_url"
+            ]
+          },
+          {
+            "required": [
+              "elements"
+            ]
+          },
+          {
+            "required": [
+              "endImageUrl"
+            ]
+          },
+          {
+            "required": [
+              "end_image_url"
+            ]
+          },
+          {
+            "required": [
+              "execution"
+            ]
+          },
+          {
+            "required": [
+              "imageUrl"
+            ]
+          },
+          {
+            "required": [
+              "image_url"
+            ]
+          },
+          {
+            "required": [
+              "inputs"
+            ]
+          },
+          {
+            "required": [
+              "model"
+            ]
+          },
+          {
+            "required": [
+              "operation"
+            ]
+          },
+          {
+            "required": [
+              "output"
+            ]
+          },
+          {
+            "required": [
+              "parameters"
+            ]
+          },
+          {
+            "required": [
+              "prompt"
+            ]
+          },
+          {
+            "required": [
+              "queueId"
+            ]
+          },
+          {
+            "required": [
+              "referenceAudioUrls"
+            ]
+          },
+          {
+            "required": [
+              "referenceImageUrls"
+            ]
+          },
+          {
+            "required": [
+              "referenceVideoUrls"
+            ]
+          },
+          {
+            "required": [
+              "reference_audio_urls"
+            ]
+          },
+          {
+            "required": [
+              "reference_image_urls"
+            ]
+          },
+          {
+            "required": [
+              "reference_video_urls"
+            ]
+          },
+          {
+            "required": [
+              "returnBinary"
+            ]
+          },
+          {
+            "required": [
+              "return_binary"
+            ]
+          },
+          {
+            "required": [
+              "sceneImageUrls"
+            ]
+          },
+          {
+            "required": [
+              "scene_image_urls"
+            ]
+          },
+          {
+            "required": [
+              "stream"
+            ]
+          },
+          {
+            "required": [
+              "streaming"
+            ]
+          },
+          {
+            "required": [
+              "token"
+            ]
+          },
+          {
+            "required": [
+              "venice_api_key"
+            ]
+          },
+          {
+            "required": [
+              "version"
+            ]
+          },
+          {
+            "required": [
+              "videoUrl"
+            ]
+          },
+          {
+            "required": [
+              "video_url"
+            ]
+          }
+        ]
+      },
       "type": "object"
     },
     "prompt": {

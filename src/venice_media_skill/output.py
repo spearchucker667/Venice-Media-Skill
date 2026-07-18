@@ -23,6 +23,36 @@ from .util import (
     utc_now_iso,
 )
 
+# How many bytes to read from the start of a file-path blob to validate
+# its declared ``Content-Type`` against the on-disk magic-byte signature.
+# 64 bytes is enough for every common media magic sequence we accept;
+# readers must not slurp multi-megabyte files into RAM.
+BLOB_MAGIC_PREFIX_READ: int = 64
+
+
+@dataclass(slots=True, frozen=True)
+class _Blob:
+    """A single media artifact pulled out of an :class:`ApiResponse`.
+
+    Exactly one of ``content`` or ``file_path`` is populated:
+
+    - ``content`` is set when the download client returned bytes in
+      memory (``download_public_bytes`` or a JSON base64 body).
+    - ``file_path`` is set when the download client streamed the bytes
+      to a tmp file and atomically renamed into a caller-supplied
+      destination (``download_public_file``).
+
+    ``sha256`` and ``observed`` come from the request the client
+    measured and are reused so we never rehash gigabytes of media on
+    the consumer side.
+    """
+
+    content_type: str
+    content: bytes | None = None
+    file_path: Path | None = None
+    sha256: str | None = None
+    observed: int = 0
+
 
 @dataclass(slots=True)
 class ArtifactWriter:
@@ -45,22 +75,29 @@ class ArtifactWriter:
         if not blobs:
             raise OutputError("Venice response did not contain decodable media.")
         artifacts: list[dict[str, Any]] = []
-        for index, (content_type, content) in enumerate(blobs, start=1):
+        for index, blob in enumerate(blobs, start=1):
             artifact_path = _resolve_artifact_path(
                 directory,
                 operation=operation,
                 filename=filename,
                 index=index,
                 total=len(blobs),
-                content_type=content_type,
+                content_type=blob.content_type,
                 overwrite=overwrite,
             )
-            _atomic_write_bytes(artifact_path, content)
+            if blob.file_path is not None:
+                _commit_file_blob(blob, artifact_path, overwrite=overwrite)
+                bytes_written = blob.observed
+                sha256 = blob.sha256 or _sha256_of_file(artifact_path)
+            else:
+                _atomic_write_bytes(artifact_path, blob.content or b"", allow_overwrite=overwrite)
+                bytes_written = len(blob.content or b"")
+                sha256 = blob.sha256 or _sha256(blob.content or b"")
             artifact = {
                 "path": str(artifact_path.resolve()),
-                "content_type": content_type,
-                "bytes": len(content),
-                "sha256": _sha256(content),
+                "content_type": blob.content_type,
+                "bytes": bytes_written,
+                "sha256": sha256,
             }
             if write_metadata:
                 sidecar = artifact_path.with_suffix(artifact_path.suffix + ".metadata.json")
@@ -71,22 +108,27 @@ class ArtifactWriter:
                     "artifact": artifact,
                     **metadata,
                 }
-                # Atomic rename happens inside ``_atomic_write_text``. We
-                # only record the sidecar for later metadata_paths, not
-                # because we need to commit it again.
                 _atomic_write_text(
                     sidecar,
                     json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n",
+                    allow_overwrite=overwrite,
                 )
                 artifact["metadata_path"] = str(sidecar.resolve())
             artifacts.append(artifact)
         return artifacts
 
 
-def _atomic_write_bytes(target: Path, data: bytes) -> Path:
-    """Atomically write ``data`` to ``target``. Returns the temp path used."""
+def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = False) -> Path:
+    """Atomically write ``data`` to ``target`` via tmp+sibling+os.replace.
+
+    If ``allow_overwrite=False`` and ``target`` exists, raise. Otherwise
+    we unconditionally write to a sibling temp file and ``os.replace``
+    into place so the file is either the complete bytes we wrote or absent
+    — there is no ``remove(target) ; write(tmp) ; replace`` window in which
+    a crash would lose the original.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    if target.exists() and not allow_overwrite:
         raise OutputError(f"Output already exists (set overwrite=true): {target}")
     fd, temp_path = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
@@ -108,9 +150,16 @@ def _atomic_write_bytes(target: Path, data: bytes) -> Path:
         raise
 
 
-def _atomic_write_text(target: Path, data: str) -> Path:
+def _atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = False) -> Path:
+    """Atomically write ``data`` to ``target`` via tmp+sibling+os.replace.
+
+    If ``allow_overwrite=False`` and ``target`` exists, raise. Otherwise
+    overwrite-in-place atomically. We never ``os.remove(target)`` first
+    — this guarantees the prior contents are recoverable if the new
+    write fails before ``os.replace`` swaps files in.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    if target.exists() and not allow_overwrite:
         raise OutputError(f"Output already exists (set overwrite=true): {target}")
     fd, temp_path = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
@@ -133,21 +182,82 @@ def _atomic_write_text(target: Path, data: str) -> Path:
         raise
 
 
-def _extract_blobs(response: ApiResponse) -> list[tuple[str, bytes]]:
+def _commit_file_blob(blob: _Blob, final_path: Path, *, overwrite: bool) -> None:
+    """Atomically commit a file-path blob into ``final_path``.
+
+    Validates the on-disk magic bytes via ``fast_validate_content_type``
+    against ``blob.content_type``, then renames the source into the
+    caller's final path with ``os.replace``. If the final destination
+    already exists the caller must opt in via ``overwrite=True``.
+    """
+    if blob.file_path is None:
+        raise OutputError("file_path blob has no file_path.")
+    if not blob.file_path.exists():
+        raise OutputError(f"download was incomplete: {blob.file_path} does not exist")
+    if blob.observed <= 0:
+        raise OutputError(f"download was empty: {blob.file_path}")
+    _validate_blob_magic(blob)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    if final_path.exists() and not overwrite:
+        raise OutputError(f"Output already exists (set overwrite=true): {final_path}")
+    source_resolved = blob.file_path.resolve()
+    try:
+        os.replace(source_resolved, final_path)
+    except OSError:
+        # Final destination missing/not writable - propagate. Source
+        # remains intact at blob.file_path so the caller can retry.
+        raise
+
+
+def _validate_blob_magic(blob: _Blob) -> None:
+    """Re-validate the magic bytes against the declared ``Content-Type``.
+
+    The download sink verified the type on the wire; we revalidate on
+    disk because we want to surface a clean error if the on-disk file
+    disagrees with the header before the caller moves it via rename.
+    """
+    if blob.file_path is None:
+        return
+    read_bytes = max(1, min(BLOB_MAGIC_PREFIX_READ, blob.observed))
+    with blob.file_path.open("rb") as handle:
+        prefix = handle.read(read_bytes)
+    fast_validate_content_type(prefix, blob.content_type)
+
+
+def _extract_blobs(response: ApiResponse) -> list[_Blob]:
+    """Pull every decodable media artifact out of a Venice :class:`ApiResponse`."""
+    if response.file_path is not None and response.observed > 0:
+        content_type = response.content_type.split(";", 1)[0] or "application/octet-stream"
+        return [
+            _Blob(
+                content_type=content_type,
+                content=None,
+                file_path=response.file_path,
+                sha256=response.sha256,
+                observed=response.observed,
+            )
+        ]
     if response.content is not None:
-        content_type = response.content_type.split(";", 1)[0]
+        content_type = response.content_type.split(";", 1)[0] or "application/octet-stream"
         fast_validate_content_type(response.content, content_type)
-        return [(content_type, response.content)]
+        return [
+            _Blob(
+                content_type=content_type,
+                content=response.content,
+                sha256=response.sha256,
+                observed=len(response.content),
+            )
+        ]
     return _extract_json_blobs(response.json_data)
 
 
-def _extract_json_blobs(payload: Any) -> list[tuple[str, bytes]]:
-    results: list[tuple[str, bytes]] = []
+def _extract_json_blobs(payload: Any) -> list[_Blob]:
+    results: list[_Blob] = []
     if isinstance(payload, str):
         if payload.startswith("data:"):
             mime, blob = decode_data_url(payload)
             fast_validate_content_type(blob, mime)
-            results.append((mime, blob))
+            results.append(_Blob(content_type=mime, content=blob, observed=len(blob)))
         return results
     if isinstance(payload, list):
         for item in payload:
@@ -168,12 +278,26 @@ def _extract_json_blobs(payload: Any) -> list[tuple[str, bytes]]:
                         reason="invalid base64 payload",
                     ) from exc
                 fast_validate_content_type(blob, media_type)
-                results.append((media_type, blob))
+                results.append(
+                    _Blob(
+                        content_type=media_type,
+                        content=blob,
+                        sha256=_sha256(blob),
+                        observed=len(blob),
+                    )
+                )
         elif key in {"image", "audio", "video"} and isinstance(value, str):
             if value.startswith("data:"):
                 mime, blob = decode_data_url(value)
                 fast_validate_content_type(blob, mime)
-                results.append((mime, blob))
+                results.append(
+                    _Blob(
+                        content_type=mime,
+                        content=blob,
+                        sha256=_sha256(blob),
+                        observed=len(blob),
+                    )
+                )
             elif _looks_like_base64(value):
                 media_type = _media_type_for_key(key)
                 try:
@@ -185,11 +309,25 @@ def _extract_json_blobs(payload: Any) -> list[tuple[str, bytes]]:
                         reason="invalid base64 payload",
                     ) from exc
                 fast_validate_content_type(blob, media_type)
-                results.append((media_type, blob))
+                results.append(
+                    _Blob(
+                        content_type=media_type,
+                        content=blob,
+                        sha256=_sha256(blob),
+                        observed=len(blob),
+                    )
+                )
         elif key == "url" and isinstance(value, str) and value.startswith("data:"):
             mime, blob = decode_data_url(value)
             fast_validate_content_type(blob, mime)
-            results.append((mime, blob))
+            results.append(
+                _Blob(
+                    content_type=mime,
+                    content=blob,
+                    sha256=_sha256(blob),
+                    observed=len(blob),
+                )
+            )
         elif key in {"data", "images", "results", "output"}:
             results.extend(_extract_json_blobs(value))
     return results
@@ -213,6 +351,16 @@ def _sha256(data: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_of_file(path: Path) -> str:
+    import hashlib
+
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(64 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _validate_safe_filename(filename: str) -> None:
@@ -273,33 +421,31 @@ def _resolve_artifact_path(
     resolved = candidate.resolve()
     if not resolved.parent.samefile(directory):
         raise OutputError(f"output.filename resolves to {resolved} which is outside {directory}")
-    if resolved.exists():
-        if not overwrite:
-            counter = 2
-            max_attempts = 10
-            while counter <= max_attempts:
-                numbered = resolved.with_name(f"{resolved.stem}-{counter}{resolved.suffix}")
-                if not numbered.exists():
-                    resolved = numbered
-                    break
-                counter += 1
-            else:
-                unique_stem = f"{resolved.stem}-{uuid.uuid4().hex[:8]}"
-                resolved = resolved.with_name(f"{unique_stem}{resolved.suffix}")
+    if resolved.exists() and not overwrite:
+        counter = 2
+        max_attempts = 10
+        while counter <= max_attempts:
+            numbered = resolved.with_name(f"{resolved.stem}-{counter}{resolved.suffix}")
+            if not numbered.exists():
+                resolved = numbered
+                break
+            counter += 1
         else:
-            # Caller asked to overwrite. Remove existing file so the atomic
-            # ``_atomic_write_bytes`` precondition (file absent) holds on
-            # both POSIX and Windows.
-            os.remove(resolved)
+            unique_stem = f"{resolved.stem}-{uuid.uuid4().hex[:8]}"
+            resolved = resolved.with_name(f"{unique_stem}{resolved.suffix}")
+    # Overwrite=True semantics: the writer validates magic bytes and
+    # atomically replaces the destination.
     return resolved
 
 
 # Backward-compatible name for the sidecar writer used by consent.py.
-def atomic_write_text(target: Path, data: str) -> Path:
-    if target.exists():
-        # Allow consent and approval records to overwrite themselves.
-        os.remove(target)
-    return _atomic_write_text(target, data)
+def atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = True) -> Path:
+    """Atomically (re)write a small JSON-ish file to ``target``.
+
+    Never ``os.remove(target)`` first: the previous contents remain
+    recoverable while we write to a sibling tmp + ``os.replace``.
+    """
+    return _atomic_write_text(target, data, allow_overwrite=allow_overwrite)
 
 
 def _deprecated_validate_safe_filename(filename: str) -> None:  # pragma: no cover - re-export

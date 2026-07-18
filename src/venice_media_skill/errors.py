@@ -79,12 +79,13 @@ class QuoteApproval:
     """A persisted, hash-bound quote approval.
 
     Holds exactly what the user reviewed so any divergence at queue time is
-    rejected with a deterministic error.
+    rejected with a deterministic error. ``model`` is *not* stored because
+    Venice quotes are operation-keyed, not model-keyed — the model flows in
+    with the queue body and is verified independently.
     """
 
     approval_id: str
     operation: str
-    model: str
     payload_hash: str
     quote_response: dict[str, Any]
     max_cost: float

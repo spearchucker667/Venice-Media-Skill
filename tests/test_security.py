@@ -528,7 +528,6 @@ class TestQuoteApprovalBinding:
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
         approval = store.record(
             operation="video.generate",
-            model="venice-video",
             payload_hash="hh",
             quote_response={"quote": 0.5},
             max_cost=1.0,
@@ -552,7 +551,6 @@ class TestQuoteApprovalBinding:
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
         approval = store.record(
             operation="video.generate",
-            model="venice-video",
             payload_hash="hh",
             quote_response={"quote": 0.5},
             max_cost=1.0,
@@ -570,7 +568,6 @@ class TestQuoteApprovalBinding:
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
         approval = store.record(
             operation="video.generate",
-            model="venice-video",
             payload_hash="hh",
             quote_response={"quote": 0.5},
             max_cost=1.0,

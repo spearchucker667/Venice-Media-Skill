@@ -37,7 +37,14 @@ def install_skill(
         kimi_home = Path(os.environ.get("KIMI_CODE_HOME", home / ".kimi-code")).expanduser()
         kimi_destination = kimi_home / "skills" / "venice-media"
 
-    destinations = [generic_destination]
+    # Host selector is exclusive: ``--host kimi`` installs only the Kimi
+    # discovery root; ``--host generic`` only the generic ``.agents`` root.
+    # ``--host all`` installs both. This avoids silently placing the
+    # generic skill in environments whose host is Kimi (where the discovery
+    # root is ``~/.kimi-code``) and vice versa.
+    destinations: list[Path] = []
+    if host in {"generic", "all"}:
+        destinations.append(generic_destination)
     if host in {"kimi", "all"}:
         destinations.append(kimi_destination)
 

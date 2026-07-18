@@ -157,6 +157,7 @@ class ApiResponse:
     sha256: str | None = None
     path: str | None = None
     file_path: Path | None = None
+    observed: int = 0
 
     @property
     def is_binary(self) -> bool:
@@ -251,6 +252,7 @@ class VeniceClient:
         data: Mapping[str, Any] | None = None,
         files: Any = None,
     ) -> ApiResponse:
+        path = _validate_api_path(path)
         try:
             response = self._client.request(
                 method,
@@ -721,14 +723,16 @@ class _FileSink:
     def finalize(self) -> _Finalized:
         if self._discarded:
             raise RuntimeError("FileSink was discarded and cannot be finalized")
+        # Reject empty downloads BEFORE we touch ``self.destination`` so
+        # an existing artifact is preserved — no ``os.replace`` followed
+        # by ``unlink`` race window here.
+        if self.observed == 0:
+            self.discard()
+            raise NetworkSafetyError(url="", reason="empty download not allowed")
         self._fp.flush()
         os.fsync(self._fp.fileno())
         self._fp.close()
         os.replace(self._tmp_path, self.destination)
-        if self.observed == 0:
-            with contextlib.suppress(Exception):
-                self.destination.unlink(missing_ok=True)
-            raise NetworkSafetyError(url="", reason="empty download not allowed")
         return _Finalized(
             body=b"",
             file_path=self.destination,
@@ -749,6 +753,42 @@ class _FileSink:
 # ---------------------------------------------------------------
 # validation helpers
 # ---------------------------------------------------------------
+
+
+def _validate_api_path(path: str) -> str:
+    """Reject any non-path ``path`` argument before handing it to ``httpx``.
+
+    The authenticated :py:meth:`VeniceClient.request` only accepts absolute
+    paths under the configured ``base_url``.  HTTPX will accept an absolute
+    URL, a scheme-relative URL (``//evil.example/foo``), or a path-only
+    string — and would forward the ``Authorization`` Bearer header to the
+    resulting host.  We refuse anything except an absolute path that begins
+    with a single ``/`` and contains no scheme, netloc, fragment, or query.
+    """
+    if not isinstance(path, str) or not path:
+        raise NetworkSafetyError(
+            url="",
+            reason="authenticated request path must be a non-empty string",
+        )
+    if path.startswith("//"):
+        raise NetworkSafetyError(
+            url=path,
+            reason="scheme-relative URLs are not permitted on authenticated requests",
+        )
+    if not path.startswith("/"):
+        # An absolute or relative-without-leading-slash URL means the caller
+        # is trying to redirect the request away from ``base_url``.
+        raise NetworkSafetyError(
+            url=path,
+            reason="authenticated request path must begin with '/'",
+        )
+    parsed = urlparse(path)
+    if parsed.scheme or parsed.netloc or parsed.params.startswith("//"):
+        raise NetworkSafetyError(
+            url=path,
+            reason="authenticated request path must not contain a scheme, host, or netloc",
+        )
+    return path
 
 
 def _is_safe_base_url(base_url: str) -> bool:

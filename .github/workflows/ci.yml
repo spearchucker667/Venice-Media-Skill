@@ -36,8 +36,6 @@ jobs:
         run: python scripts/inspect-sdist.py
       - name: Verify bundled skill/reference mirrors
         run: python scripts/verify-bundled-assets.py
-      - name: Inspect sdist contents
-        run: python scripts/inspect-sdist.py
 
   cross-platform-smoke:
     name: Smoke / ${{ matrix.os }}

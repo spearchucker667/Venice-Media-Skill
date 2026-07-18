@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import ReservedParameterError
+from .errors import PayloadValidationError, ReservedParameterError
 from .request import MediaRequest
 from .reserved import RESERVED_PARAMETERS, RESERVED_PROVIDER_KEYS, RESERVED_TOP_LEVEL_KEYS
 from .util import normalize_media_input, stable_json
@@ -133,7 +133,10 @@ def reject_unknown_fields(mapping: Mapping[str, Any], allowed: set[str], context
     unknown = set(mapping) - allowed
     if unknown:
         unknown_list = ", ".join(sorted(unknown))
-        raise ReservedParameterError(f"<set of {len(unknown)} fields: {unknown_list}>", context=context)
+        raise PayloadValidationError(
+            f"Unknown field(s) for {context}: {unknown_list}; "
+            f"see venice-openapi.yaml for the operation's allowed schema."
+        )
 
 
 def _copy_only(parameters: Mapping[str, Any], allowed_keys: set[str]) -> dict[str, Any]:
@@ -329,36 +332,29 @@ def build_video_quote(request: MediaRequest) -> CanonicalPayload:
     """``POST /video/quote`` - canonical provider body.
 
     Derived from the same canonical queue payload so the quote response
-    cannot disagree with what gets queued. The quote body is a subset of
-    the queue body (no reference media), but we must keep the same hash
-    for the quote/queue gate. We compute the hash from the full queue
-    payload and return a CanonicalPayload with the quote body but the
-    queue payload's hash.
+    cannot disagree with what gets queued. The quote body is a typed
+    projection of the queue body with reference media stripped; we keep
+    the queue payload's hash so the quote/queue gate cannot diverge.
     """
     queue_canonical = build_video_queue(request)
-    payload = dict(queue_canonical.payload)
-    extras = _copy_only(request.parameters, {"model", "duration"})
-    # Quote does not need reference media; strip image/audio/video urls.
-    for key in (
-        "image_url",
-        "end_image_url",
-        "audio_url",
+    expected_keys = (
+        "model",
+        "duration",
+        "aspect_ratio",
+        "resolution",
+        "upscale_factor",
+        "audio",
         "video_url",
-        "reference_image_urls",
-        "reference_video_urls",
-        "reference_audio_urls",
-        "scene_image_urls",
-        "elements",
-    ):
-        payload.pop(key, None)
-    payload["model"] = extras.get("model", request.model)
-    if "duration" in extras:
-        payload["duration"] = extras["duration"]
-    # Return quote body but with the queue payload's hash so the gate passes.
+        "reference_video_total_duration",
+    )
+    # Reference media and reference list fields are queue-only — strip.
+    quote_payload = {key: value for key, value in queue_canonical.payload.items() if key in expected_keys}
+    if "model" not in quote_payload and request.model is not None:
+        quote_payload["model"] = request.model
     return CanonicalPayload(
         operation=queue_canonical.operation,
         endpoint="/video/quote",
-        payload=payload,
+        payload=quote_payload,
         hash=queue_canonical.hash,
         input_hashes=queue_canonical.input_hashes,
     )
@@ -387,22 +383,20 @@ def build_audio_quote(request: MediaRequest) -> CanonicalPayload:
     """``POST /audio/quote`` - canonical provider body for audio quoting.
 
     Quote schema only accepts: model, duration_seconds, character_count.
+    Projected from the canonical queue payload so the quote/queue gate
+    cannot disagree about which fields are queued.
     """
-    extras = _copy_only(request.parameters, {"model", "duration_seconds", "character_count"})
-    body = build_audio_queue(request)
-    # Quote body must only contain quote schema fields
-    quote_payload = {"model": extras.get("model", request.model)}
-    if "duration_seconds" in extras:
-        quote_payload["duration_seconds"] = extras["duration_seconds"]
-    if "character_count" in extras:
-        quote_payload["character_count"] = extras["character_count"]
-    # Return quote body but with queue payload's hash for the gate
+    queue_canonical = build_audio_queue(request)
+    expected_keys = ("model", "duration_seconds", "character_count")
+    quote_payload = {key: value for key, value in queue_canonical.payload.items() if key in expected_keys}
+    if "model" not in quote_payload and request.model is not None:
+        quote_payload["model"] = request.model
     return CanonicalPayload(
-        operation=body.operation,
+        operation=queue_canonical.operation,
         endpoint="/audio/quote",
         payload=quote_payload,
-        hash=body.hash,
-        input_hashes=body.input_hashes,
+        hash=queue_canonical.hash,
+        input_hashes=queue_canonical.input_hashes,
     )
 
 

@@ -20,9 +20,10 @@ from . import __version__
 from .catalog import ModelCatalog
 from .client import VeniceClient
 from .config import Settings
-from .consent import ConsentStore, QuoteApprovalStore, ensure_seedance_fact
+from .consent import ConsentStore, QuoteApprovalStore
 from .errors import (
     ApiError,
+    ConfigurationError,
     ConsentApprovalMissing,
     ConsentApprovalRequired,
     ConsentRequired,
@@ -258,15 +259,27 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
         )
     if args.command == "schema":
         payload = request_json_schema()
+        # Meta-validation so a drifted/recursive schema cannot ship.
+        import jsonschema
+
+        try:
+            jsonschema.Draft202012Validator.check_schema(payload)
+        except jsonschema.SchemaError as exc:
+            raise ValueError(f"request schema is not a meta-valid JSON Schema: {exc}") from exc
         if args.output:
             target = Path(args.output).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            return {"status": "written", "path": str(target.resolve())}
-        return payload
+            return {
+                "status": "written",
+                "path": str(target.resolve()),
+                "meta_valid": True,
+                "schema_size_bytes": len(json.dumps(payload)),
+            }
+        return {"status": "ok", "meta_valid": True, "schema": payload}
     if args.command == "validate-openapi":
         path = _resolve_bundled_openapi(args.path)
-        return _validate_openapi(path)
+        return _validate_openapi_dispatch(path)
 
     settings = Settings.load(require_api_key=False)
     settings.ensure_directories()
@@ -373,12 +386,8 @@ def _approve_quote(store: QuoteApprovalStore, args: argparse.Namespace) -> dict[
         raise RequestValidationError(f"Quote file {quote_path} is not valid JSON: {exc}") from exc
     if not isinstance(quote_payload, dict):
         raise RequestValidationError("Quote file must contain a JSON object.")
-    if not ensure_seedance_fact({"needs_consent": True, "consent_flow": "seedance"}):
-        # We only need the cost here; not a real seedance call.
-        pass
     approval = store.record(
         operation=args.operation,
-        model="",
         payload_hash=args.payload_hash,
         quote_response=quote_payload,
         max_cost=float(args.max_cost),
@@ -424,6 +433,12 @@ def _doctor(settings: Settings, *, online: bool) -> dict[str, Any]:
 
 
 def _validate_openapi(path: Path) -> dict[str, Any]:
+    """Return a structured report on the OpenAPI snapshot at ``path``.
+
+    The function returns the report regardless of validity. ``main()``
+    inspects ``status`` and raises ``ConfigurationError`` on ``invalid``
+    so the CLI surface exits with code 2.
+    """
     if not path.is_file():
         raise OSError(f"OpenAPI file does not exist: {path}")
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -459,6 +474,15 @@ def _validate_openapi(path: Path) -> dict[str, Any]:
         "path_count": len(paths),
         "missing_required_paths": missing,
     }
+
+
+def _validate_openapi_dispatch(path: Path) -> dict[str, Any]:
+    """``validate-openapi`` CLI subcommand: report OR raise on invalid."""
+    result = _validate_openapi(path)
+    if result["status"] != "ok":
+        missing = ", ".join(result["missing_required_paths"])
+        raise ConfigurationError(f"OpenAPI document is missing required paths: {missing}")
+    return result
 
 
 def _emit(payload: Any, *, compact: bool, stream: Any | None = None) -> None:

@@ -669,7 +669,6 @@ def test_runner_require_quote_approval_present_succeeds(tmp_path: Path) -> None:
     canonical = build_video_queue(request)
     quote_store.record(
         operation="video.generate",
-        model="venice-1",
         payload_hash=canonical.hash,
         quote_response={"quote": 4.5},
         max_cost=10.0,
@@ -1321,14 +1320,24 @@ def test_build_video_queue_and_quote_match() -> None:
             "operation": "video.generate",
             "model": "venice-1",
             "prompt": "hi",
-            "parameters": {"duration": "5s"},
+            "parameters": {
+                "duration": "5s",
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+                "audio": True,
+            },
             "execution": {"dry_run": True, "wait": False},
         }
     )
     queue = build_video_queue(request)
     quote = build_video_quote(request)
     assert queue.hash == quote.hash
-    assert queue.payload == quote.payload
+    # Quote is a typed projection: every key submitted for quoting must be
+    # legal per the OpenAPI QuoteVideoRequest shape, but reference media is
+    # stripped because Venice charges by duration/resolution/aspect_ratio.
+    assert set(quote.payload).issubset(set(queue.payload))
+    expected_quote_keys = {"duration", "aspect_ratio", "resolution", "audio", "model"}
+    assert expected_quote_keys.issubset(quote.payload.keys())
 
 
 def test_build_audio_queue_and_quote_match() -> None:
@@ -1337,13 +1346,24 @@ def test_build_audio_queue_and_quote_match() -> None:
             "operation": "audio.generate",
             "model": "venice-music",
             "prompt": "jazz",
-            "parameters": {"duration_seconds": 30},
+            "parameters": {
+                "duration_seconds": 30,
+                "force_instrumental": True,
+                "lyrics_prompt": "unused",
+            },
             "execution": {"dry_run": True, "wait": False},
         }
     )
     queue = build_audio_queue(request)
     quote = build_audio_quote(request)
     assert queue.hash == quote.hash
+    # Quote schema is exactly {model, duration_seconds, character_count};
+    # queue-only fields like ``lyrics_prompt`` or ``force_instrumental``
+    # must never appear in the quote body.
+    assert set(quote.payload).issubset({"model", "duration_seconds", "character_count"})
+    assert "force_instrumental" not in quote.payload
+    assert "lyrics_prompt" not in quote.payload
+    assert "duration_seconds" in quote.payload
 
 
 def test_reserved_parameters_constant() -> None:
@@ -1385,7 +1405,6 @@ def test_quote_approval_store_record_and_consume_branches(tmp_path: Path) -> Non
     store = QuoteApprovalStore(tmp_path / "qu.json")
     approval = store.record(
         operation="video.generate",
-        model="venice-1",
         payload_hash="hash-1",
         quote_response={"quote": 9.0},
         max_cost=10.0,
@@ -1409,7 +1428,6 @@ def test_quote_approval_id_is_well_formed(tmp_path: Path) -> None:
     store = QuoteApprovalStore(tmp_path / "q.json")
     approval = store.record(
         operation="audio.generate",
-        model="a",
         payload_hash="hash-2",
         quote_response={"quote": 1.0},
         max_cost=1.0,

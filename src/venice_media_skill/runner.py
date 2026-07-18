@@ -289,15 +289,12 @@ class MediaRunner:
             raise RequestValidationError(
                 "download_url must not be supplied in manifest; URLs are obtained from Venice API responses only."
             )
-        if "queue_id" in request.parameters:
-            queue_id = request.parameters["queue_id"]
-            if not isinstance(queue_id, str) or not queue_id:
-                raise RequestValidationError(f"{request.operation} requires a string parameters.queue_id.")
-        else:
-            queue_id_value = request.inputs.get("queue_id") if isinstance(request.inputs, Mapping) else None
-            if not isinstance(queue_id_value, str) or not queue_id_value:
-                raise RequestValidationError(f"{request.operation} requires parameters.queue_id or inputs.queue_id.")
-            queue_id = queue_id_value
+        # Canonical queue_id handling lives in ``request.MediaRequest.validate``.
+        # ``parameters.queue_id`` is the only accepted source; ``inputs.queue_id``
+        # is rejected at the manifest gate.
+        queue_id = request.parameters.get("queue_id")
+        if not isinstance(queue_id, str) or not queue_id:
+            raise RequestValidationError(f"{request.operation} requires a non-empty string parameters.queue_id.")
 
         model = request.model
         download_url: str | None = None

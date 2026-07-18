@@ -57,7 +57,15 @@ Do not submit another generation. Retrieve the existing queue:
 
 ## `consent_required`
 
-Show the returned `policy_text`. After explicit confirmation, set `attestations.seedance_face_consent=true` and resubmit the same request. Do not send `consent_version`.
+Show the returned `policy_text` and the `challenge_id` from the CLI output. After the user explicitly confirms every depicted likeness and the policy text, run:
+
+```bash
+venice-media approve-consent <challenge_id> \
+  --acknowledge-policy \
+  --max-cost <USD>
+```
+
+Then resubmit the same request. Setting `attestations.seedance_face_consent=true` on the manifest alone is informational only; the bridge only attaches consents because of a stored, hash-bound approval tied to that specific payload. Never add `consent_version` to the manifest — Venice tracks it server-side.
 
 ## HTTP 400
 
