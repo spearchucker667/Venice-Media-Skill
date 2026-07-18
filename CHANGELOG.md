@@ -12,6 +12,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 > Changes that have been committed but not yet released in a version.
 
+No changes yet.
+
+---
+
+## 🚀 [1.2.1] - 2026-07-18
+
 ### 🔐 Security
 
 | ID | Description | Impact |
@@ -65,7 +71,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | **Kimi Code Adapter** | Native integration for Kimi Code users | High |
 | **Python JSON Bridge** | Complete bridge for media operations | Core |
 | **Image Operations** | Generate, edit, multi-edit, upscale, background removal | High |
-| **Video Operations** | Generate, retrieve, edit, extend, stitch | High |
+| **Video Operations** | Generate and retrieve, including provider-supported reference/edit/extend/stitch workflows expressed through `video.generate` inputs and prompts | High |
 | **Audio Operations** | TTS, music generation, transcription | High |
 | **Live Model Discovery** | Dynamic `GET /models` queries | Core |
 | **Model-Aware Planning** | Intelligent parameter questions based on model constraints | Core |
@@ -84,7 +90,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | Item | Description |
 |------|-------------|
 | **Artifact Metadata** | JSON sidecars for every media artifact with reproducibility info | High |
-| **Comprehensive Tests** | Full test coverage for all modules | High |
+| **Comprehensive Tests** | Offline unit and integration coverage above the enforced 80% branch-coverage gate | High |
 | **CI Pipeline** | Automated testing and validation | High |
 | **Release Automation** | GitHub Actions for automated releases | Medium |
 | **Bundled API References** | Complete Venice API documentation snapshot | Medium |
@@ -104,7 +110,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 | Version | Date | Commits | Files Changed | Lines Added | Lines Deleted |
 |---------|------|---------|---------------|--------------|----------------|
-| Unreleased | 2026-07-18 | 8 | 68 | 24,077 | 2,140 |
+| 1.2.1 | 2026-07-18 | - | - | - | - |
 | 0.1.0 | 2026-07-16 | - | 93 | 69,172 | - |
 
 ---

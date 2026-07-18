@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "venice-media-skill"
-version = "0.1.0"
+version = "1.2.1"
 description = "Host-neutral Agent Skill and Python bridge for Venice API image, video, TTS, music, editing, upscaling, and transcription workflows."
 readme = "README.md"
 requires-python = ">=3.11"

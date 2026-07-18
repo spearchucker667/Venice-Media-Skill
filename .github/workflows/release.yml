@@ -7,14 +7,16 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
           cache: pip
@@ -32,7 +34,26 @@ jobs:
           git archive --format=tar.gz --prefix="venice-media-skill-${VERSION}/" \
             --output="dist/venice-media-skill-${VERSION}-source.tar.gz" HEAD
           (cd dist && sha256sum * > SHA256SUMS.txt)
-      - uses: softprops/action-gh-release@v3
+      - name: Verify release asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "dist/venice_media_skill-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+          test -s "dist/venice_media_skill-${GITHUB_REF_NAME#v}.tar.gz"
+          test -s "dist/venice-media-skill-${GITHUB_REF_NAME#v}-source.zip"
+          test -s "dist/venice-media-skill-${GITHUB_REF_NAME#v}-source.tar.gz"
+          test -s dist/SHA256SUMS.txt
+          test "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" = "5"
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/venice_media_skill-*.whl
+            dist/venice_media_skill-*.tar.gz
+            dist/venice-media-skill-*-source.zip
+            dist/venice-media-skill-*-source.tar.gz
+            dist/SHA256SUMS.txt
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             dist/*

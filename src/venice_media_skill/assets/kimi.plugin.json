@@ -1,6 +1,6 @@
 {
   "name": "venice-media",
-  "version": "0.1.0",
+  "version": "1.2.1",
   "description": "Use Venice media APIs from Kimi Code while retaining Kimi as the host agent.",
   "skills": [
     "./venice-media"

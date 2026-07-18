@@ -36,7 +36,7 @@ This document summarizes the findings and remediation efforts from the July 2026
 
 All fixes have been verified through:
 - Unit and integration tests above the repository's configured 80% coverage gate
-- `validate.sh` gate (mypy, ruff, pytest, schema drift check)
+- `validate.sh` gate (mypy, ruff, pytest/coverage, Bandit, dependency audit, environment integrity, build, OpenAPI/schema drift, bundled-asset parity, and sdist inspection)
 - CI pipeline (quality, smoke tests, security scans)
 
 ## Conclusion

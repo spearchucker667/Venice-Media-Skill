@@ -10,8 +10,9 @@ Security fixes and patches are applied to the **latest released minor version**.
 
 | Version | Status | Security Support |
 |---------|--------|-------------------|
-| `>= 0.1.0` | ✅ Active | Security fixes included |
-| `< 0.1.0` | ❌ Legacy | No security support |
+| `>= 1.2.1` | ✅ Active | Current security fixes included |
+| `0.1.0` | ⚠️ Legacy | Upgrade to the current release |
+| Other versions | ❌ Unsupported | No security support |
 
 ---
 

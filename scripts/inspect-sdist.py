@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 
 FORBIDDEN_TOKENS: tuple[str, ...] = (
@@ -44,11 +45,14 @@ FORBIDDEN_TOKENS: tuple[str, ...] = (
 )
 
 
-def _find_sdist(dist_dir: Path) -> Path | None:
-    for candidate in sorted(dist_dir.glob("*.tar.gz")):
-        if candidate.name.startswith("venice_media_skill-"):
-            return candidate
-    return None
+def _project_version(root: Path) -> str:
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(project["project"]["version"])
+
+
+def _find_sdist(dist_dir: Path, version: str) -> Path | None:
+    candidate = dist_dir / f"venice_media_skill-{version}.tar.gz"
+    return candidate if candidate.is_file() else None
 
 
 def _is_symlink_escape(link_target: str) -> bool:
@@ -60,10 +64,15 @@ def _is_symlink_escape(link_target: str) -> bool:
 
 
 def main(dist_dir: str = "dist") -> int:
+    root = Path(__file__).resolve().parent.parent
     dist_path = Path(dist_dir)
-    sdist = _find_sdist(dist_path)
+    version = _project_version(root)
+    sdist = _find_sdist(dist_path, version)
     if sdist is None:
-        print("inspect-sdist: no sdist tarball found in dist/", file=sys.stderr)
+        print(
+            f"inspect-sdist: expected {dist_path / f'venice_media_skill-{version}.tar.gz'}",
+            file=sys.stderr,
+        )
         return 1
 
     violations: list[str] = []

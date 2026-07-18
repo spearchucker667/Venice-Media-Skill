@@ -8,6 +8,9 @@ python -m ruff check .
 python -m ruff format --check .
 python -m mypy src
 python -m pytest --cov=venice_media_skill --cov-report=term-missing
+python -m bandit -q -r src
+python -m pip_audit
+python -m pip check
 python -m build
 PYTHONPATH=src python -m venice_media_skill validate-openapi references/venice-openapi.yaml
 python - <<'PY'

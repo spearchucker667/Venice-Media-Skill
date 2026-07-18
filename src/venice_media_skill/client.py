@@ -40,7 +40,7 @@ def _get_package_version() -> str:
     try:
         return importlib.metadata.version("venice-media-skill")
     except importlib.metadata.PackageNotFoundError:
-        return "0.1.0"
+        return "1.2.1"
 
 
 # Authenticated API endpoints MUST be limited to the canonical Venice API

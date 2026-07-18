@@ -28,6 +28,7 @@ This document describes the release process for Venice Media Skill. Releases are
 - [ ] **Update `CHANGELOG.md`** with new version entry
 - [ ] **Update version** in `pyproject.toml`
 - [ ] **Update version** in `src/venice_media_skill/__init__.py`
+- [ ] **Update version** in both Kimi plugin manifests
 - [ ] **Verify consistency** across all version references
 
 ### 3. ⚡ Validation
@@ -185,7 +186,7 @@ Track release metrics:
 
 ```bash
 # Bump version for next development cycle
-# e.g., from 0.1.0 to 0.1.1-SNAPSHOT or 0.2.0-SNAPSHOT
+# e.g., from 1.2.1 to the next intended semantic version
 ```
 
 ### 3. Monitor

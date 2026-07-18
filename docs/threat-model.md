@@ -1,6 +1,6 @@
 # Venice Media Skill - Threat Model
 
-**Version:** 1.2.0  
+**Version:** 1.2.1
 **Last Updated:** 2026-07-18  
 **Status:** Active  
 **Classification:** Public  
@@ -278,18 +278,18 @@ All identified block-release and high-severity findings have been remediated. No
 | **Data Integrity** | ✅ LOW | Fixed with fail-closed magic-byte verification and atomic writes |
 | **Concurrency** | ✅ LOW | Fixed with per-record exclusive locks and unique temp files |
 
-### Release Readiness
+### Release Readiness Gates
 
 | Requirement | Status | Blocking |
 |-------------|--------|----------|
-| P0 (Critical) | ✅ Complete | No |
-| P1 (High) | ✅ Complete | No |
-| P2 (Medium) | ✅ Complete | No |
-| P3 (Low) | ✅ Complete | No |
-| Security Tests | ✅ Complete | No |
-| Documentation | ✅ Complete | No |
+| P0 (Critical) | ✅ No open confirmed findings | No |
+| P1 (High) | ✅ Remediated in 1.2.1 candidate | No |
+| P2 (Medium) | ✅ Remediated or explicitly classified | No |
+| P3 (Low) | ✅ Addressed for the 1.2.1 release tranche | No |
+| Security Tests | ⏳ Requires exact-commit hosted CI | Yes until green |
+| Documentation | ✅ Reconciled to executable behavior | No |
 
-**Conclusion:** The package is ready for public release. All identified block-release and high-severity findings across P0, P1, and P2 have been remediated and validated. Residual risks are documented in the threat model's Known Limitations section and the audit remediation report.
+**Conclusion:** The 1.2.1 candidate closes the known local audit blockers. Public release remains conditional on exact-commit hosted CI, version/tag verification, non-empty release assets, and checksum/provenance validation. Residual risks are documented in the Known Limitations section and the audit report.
 
 ---
 
@@ -443,6 +443,7 @@ Earlier drafts allowed `*.amazonaws.com`, `*.cloudflarestorage.com`, `*.googleap
 | 1.0.0 | 2026-07-16 | Security Audit | Initial threat model based on comprehensive audit |
 | 1.1.0 | 2026-07-17 | Hardening sweep | Documented P0/P1 fixes (host separation, true streaming, resolver injection, in-memory vs file-mode defaults, typed `PublicHttpError`), added Known Limitations of the current SSRF protection, re-assessed VMS-005/007/008/013. |
 | 1.2.0 | 2026-07-18 | Remediation audit | Initial VMS-001 through VMS-028 remediation baseline. A follow-up deep audit found additional release blockers, so release readiness requires current exact-commit validation rather than this historical closure claim. |
+| 1.2.1 | 2026-07-18 | Follow-up remediation | Added recoverable multi-artifact rollback, strict video input/schema parity, corrected release identity and documentation claims, and immutable CI action pins. |
 
 ---
 
