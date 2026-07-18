@@ -136,8 +136,10 @@ def test_p02_file_path_artifact_persisted_with_correct_extension(tmp_path: Path)
     assert final.suffix == ".png"
     # The committed destination is not the bare intermediate name.
     assert final.name == "upscaled.png"
-    # The intermediate file moved atomically: not in place anymore.
-    assert not on_disk.exists()
+    # Audit P2-06 transactional model copies the source into a staging
+    # subdir and commits via ``os.replace``.  The on-disk source remains
+    # untouched — only the staged copy is moved into place.
+    assert on_disk.exists()
     assert final.read_bytes() == _PNG
 
 
@@ -521,7 +523,11 @@ def test_cur001_streamed_download_observed_propagates_through_artifact_writer(tm
     assert final.is_file()
     assert final.read_bytes() == body
     assert final.suffix == ".png"
-    assert not destination.exists()
+    # Audit P2-06 transactional model copies the streamed download
+    # through a staging subdir and commits via ``os.replace``.  The
+    # downloaded source file remains in place — only the staged copy is
+    # moved to the final destination.
+    assert destination.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -547,14 +553,19 @@ def test_cur012_atomic_no_overwrite_uses_o_excl(tmp_path: Path) -> None:
     assert target.read_bytes() == b"pre-existing"
 
 
-def test_cur012_multiblob_preflight_reserves_all_paths(tmp_path: Path) -> None:
-    """VMS-CUR-012: multi-blob response reserves every artifact+sidecar path up front.
-
-    Regression: when the second reservation collides (another process
-    creates the same unique path between resolution and reservation),
-    the first reservation is cleaned up and the call raises.
-    """
+def test_cur012_target_resolve_failure_leaves_no_staging(tmp_path: Path) -> None:
+    """VMS-CUR-012: if the second target cannot be resolved, the staging dir is never created."""
+    import venice_media_skill.output as output_module
     from venice_media_skill.output import ArtifactWriter
+
+    real_resolver = output_module._resolve_artifact_path
+    counter = {"n": 0}
+
+    def flaky(directory: Path, **kwargs: object) -> Path:
+        counter["n"] += 1
+        if counter["n"] == 2:
+            raise OutputError("simulated path resolution failure")
+        return real_resolver(directory, **kwargs)
 
     encoded = base64.b64encode(_PNG).decode()
     response = ApiResponse(
@@ -564,39 +575,67 @@ def test_cur012_multiblob_preflight_reserves_all_paths(tmp_path: Path) -> None:
         json_data={"data": [{"b64_json": encoded}, {"b64_json": encoded}]},
     )
     writer = ArtifactWriter(tmp_path)
-    # Stub ``_reserve_path`` to fail on the *second* reservation only.
-    import venice_media_skill.output as output_module
-
-    real_reserve = output_module._reserve_path
-    counter = {"n": 0}
-
-    def flaky_reserve(target: Path, *, overwrite: bool) -> None:
-        counter["n"] += 1
-        if counter["n"] == 2:
-            raise FileExistsError(17, "simulated")
-        real_reserve(target, overwrite=overwrite)
-
-    output_module._reserve_path = flaky_reserve  # type: ignore[assignment]
+    original = output_module._resolve_artifact_path
+    output_module._resolve_artifact_path = flaky  # type: ignore[assignment]
     try:
-        with pytest.raises(FileExistsError):
+        with pytest.raises(OutputError, match="simulated"):
             writer.save_response(
                 response,
                 operation="image.generate",
                 output_dir=None,
                 filename="multi",
-                overwrite=False,
-                write_metadata=True,
+                overwrite=True,
+                write_metadata=False,
                 metadata={},
             )
-        # The first reservation was rolled back: no stray placeholder remained.
-        leftovers = [
-            p
-            for p in (tmp_path / "multi.png.metadata.json").parent.iterdir()
-            if p.name.startswith("multi") and p.read_bytes() == b""
-        ]
-        assert leftovers == []
     finally:
-        output_module._reserve_path = real_reserve  # type: ignore[assignment]
+        output_module._resolve_artifact_path = original  # type: ignore[assignment]
+    assert not (tmp_path / ".venice-media-staging").exists()
+
+
+def test_cur012_multiblob_mid_batch_failure_rolls_back_staging(tmp_path: Path) -> None:
+    """VMS-CUR-012: a mid-batch staging write failure leaves no published artifacts."""
+    from venice_media_skill.output import ArtifactWriter
+
+    encoded_a = base64.b64encode(_PNG).decode()
+    encoded_b = base64.b64encode(_PNG).decode()
+    response = ApiResponse(
+        200,
+        "application/json",
+        {},
+        json_data={"data": [{"b64_json": encoded_a}, {"b64_json": encoded_b}]},
+    )
+    writer = ArtifactWriter(tmp_path)
+
+    import venice_media_skill.output as output_module
+
+    real_atomic = output_module._atomic_write_bytes
+    counter = {"n": 0}
+
+    def flake(target: Path, data: bytes, *, allow_overwrite: bool = False):  # type: ignore[no-untyped-def]
+        counter["n"] += 1
+        if counter["n"] == 2:
+            raise OSError(28, "simulated mid-batch write failure")
+        return real_atomic(target, data, allow_overwrite=allow_overwrite)
+
+    original = output_module._atomic_write_bytes
+    output_module._atomic_write_bytes = flake  # type: ignore[assignment]
+    try:
+        with pytest.raises(OSError):
+            writer.save_response(
+                response,
+                operation="image.generate",
+                output_dir=None,
+                filename="multi",
+                overwrite=True,
+                write_metadata=False,
+                metadata={},
+            )
+    finally:
+        output_module._atomic_write_bytes = original  # type: ignore[assignment]
+    leftovers = [p for p in tmp_path.iterdir() if p.is_file()]
+    assert leftovers == []
+    assert not (tmp_path / ".venice-media-staging").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,12 @@ _BASE64_MEDIA_KEYS: frozenset[str] = frozenset({"b64_json", "base64", "image", "
 # readers must not slurp multi-megabyte files into RAM.
 BLOB_MAGIC_PREFIX_READ: int = 64
 
+# Hidden sibling subdirectory used as a batch staging area for the
+# multi-artifact transaction guard. Lives under the caller's output dir so
+# cross-filesystem renames are unnecessary, and is unlinked on commit so it
+# is never visible to users browsing the directory.
+STAGING_SUBDIR_NAME: str = ".venice-media-staging"
+
 
 @dataclass(slots=True, frozen=True)
 class _Blob:
@@ -83,89 +89,111 @@ class ArtifactWriter:
         blobs = _extract_blobs(response)
         if not blobs:
             raise OutputError("Venice response did not contain decodable media.")
-        artifacts: list[dict[str, Any]] = []
-        # Preflight-reserve all artifact and sidecar paths before writing
-        # any blob, so a concurrent caller cannot race between our path
-        # resolution and content commit.  On any reservation failure we
-        # clean up placeholders from earlier reserved paths and raise.
+
+        # Resolve every target artifact + sidecar path up front so any
+        # validation/overwrite failure surfaces before we touch the disk
+        # beyond a single staging subdir.
         entries: list[tuple[_Blob, Path, Path | None]] = []
-        reserved: list[Path] = []
+        for index, blob in enumerate(blobs, start=1):
+            artifact_path = _resolve_artifact_path(
+                directory,
+                operation=operation,
+                filename=filename,
+                index=index,
+                total=len(blobs),
+                content_type=blob.content_type,
+                overwrite=overwrite,
+            )
+            sidecar = artifact_path.with_suffix(artifact_path.suffix + ".metadata.json") if write_metadata else None
+            entries.append((blob, artifact_path, sidecar))
+
+        if not overwrite:
+            for _, artifact_path, sidecar in entries:
+                if artifact_path.exists():
+                    raise OutputError(f"Output already exists (set overwrite=true): {artifact_path}")
+                if sidecar is not None and sidecar.exists():
+                    raise OutputError(f"Output already exists (set overwrite=true): {sidecar}")
+
+        # Transactional commit: stage every blob in a hidden sibling
+        # subdirectory, validate, then ``os.replace`` each staged file into
+        # its final target.  Either every target is committed or every
+        # staged file is removed — never a half-published batch.
+        staging_root = directory / STAGING_SUBDIR_NAME
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging_subdir = staging_root / f"tx-{uuid.uuid4().hex}"
+        staging_subdir.mkdir(parents=True, exist_ok=True)
+
+        def _teardown_staging() -> None:
+            with suppress(OSError):
+                shutil.rmtree(staging_subdir)
+            with suppress(OSError):
+                if staging_root.exists() and not any(staging_root.iterdir()):
+                    staging_root.rmdir()
+
+        prepared: list[tuple[Path, Path | None, Path | None, dict[str, Any]]] = []
         try:
-            for blob in blobs:
-                artifact_path = _resolve_artifact_path(
-                    directory,
-                    operation=operation,
-                    filename=filename,
-                    index=entries.__len__() + 1,
-                    total=len(blobs),
-                    content_type=blob.content_type,
-                    overwrite=overwrite,
-                )
-                sidecar = artifact_path.with_suffix(artifact_path.suffix + ".metadata.json") if write_metadata else None
-                _reserve_path(artifact_path, overwrite=overwrite)
-                reserved.append(artifact_path)
-                if sidecar is not None:
-                    _reserve_path(sidecar, overwrite=overwrite)
-                    reserved.append(sidecar)
-                entries.append((blob, artifact_path, sidecar))
-        except Exception:
-            for p in reserved:
-                with suppress(FileNotFoundError):
-                    p.unlink()
-            raise
-        # After preflight reservation the caller owns every path — the
-        # leaf functions open with O_CREAT|O_EXCL (overwrite=False) only
-        # when there was no preflight; pass overwrite=True so they skip
-        # the reservation and use the placeholder already in place.
-        leaf_overwrite = True
-        for blob, artifact_path, sidecar in entries:
-            if blob.file_path is not None:
-                _commit_file_blob(blob, artifact_path, overwrite=leaf_overwrite)
-                bytes_written = blob.observed
-                sha256 = blob.sha256 or _sha256_of_file(artifact_path)
-            else:
-                _atomic_write_bytes(artifact_path, blob.content or b"", allow_overwrite=leaf_overwrite)
-                bytes_written = len(blob.content or b"")
-                sha256 = blob.sha256 or _sha256(blob.content or b"")
-            artifact = {
-                "path": str(artifact_path.resolve()),
-                "content_type": blob.content_type,
-                "bytes": bytes_written,
-                "sha256": sha256,
-            }
-            if sidecar is not None:
-                sidecar_payload = {
-                    "schema_version": 1,
-                    "created_at": utc_now_iso(),
-                    "operation": operation,
-                    "artifact": artifact,
-                    **metadata,
+            # Phase 1: write everything into the staging subdir without
+            # touching the final targets.  A failure here leaves no
+            # published artifacts — rollback wipes the staging dir.
+            for blob, artifact_path, sidecar in entries:
+                staged_artifact = staging_subdir / artifact_path.name
+                if blob.file_path is not None:
+                    _stage_file_blob(blob, staged_artifact)
+                    bytes_written = blob.observed
+                    sha256 = blob.sha256 or _sha256_of_file(staged_artifact)
+                else:
+                    _atomic_write_bytes(staged_artifact, blob.content or b"", allow_overwrite=True)
+                    bytes_written = len(blob.content or b"")
+                    sha256 = blob.sha256 or _sha256(blob.content or b"")
+
+                artifact: dict[str, Any] = {
+                    "path": str(artifact_path.resolve()),
+                    "content_type": blob.content_type,
+                    "bytes": bytes_written,
+                    "sha256": sha256,
                 }
-                _atomic_write_text(
-                    sidecar,
-                    json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n",
-                    allow_overwrite=leaf_overwrite,
-                )
-                artifact["metadata_path"] = str(sidecar.resolve())
-            artifacts.append(artifact)
-        return artifacts
+                staged_sidecar: Path | None = None
+                if sidecar is not None:
+                    staged_sidecar = staging_subdir / sidecar.name
+                    sidecar_payload = {
+                        "schema_version": 1,
+                        "created_at": utc_now_iso(),
+                        "operation": operation,
+                        "artifact": artifact,
+                        **metadata,
+                    }
+                    _atomic_write_text(
+                        staged_sidecar,
+                        json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n",
+                        allow_overwrite=True,
+                    )
+                    artifact["metadata_path"] = str(sidecar.resolve())
+                prepared.append((artifact_path, sidecar, staged_sidecar, artifact))
+        except Exception:
+            _teardown_staging()
+            raise
 
-
-def _reserve_path(target: Path, *, overwrite: bool) -> None:
-    """Atomically claim ``target`` via ``O_CREAT|O_EXCL``.
-
-    The caller owns the zero-byte placeholder; a subsequent
-    ``os.replace(temp, target)`` on a file the caller holds is safe.
-    When ``overwrite=True`` the call is a no-op.
-    """
-    if overwrite:
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
-    except FileExistsError as exc:
-        raise OutputError(f"Output already exists (set overwrite=true): {target}") from exc
+        # Phase 2: publish staged → final with per-file atomicity.  An
+        # exception here is non-recoverable: rollback any partial commits
+        # and the staging dir, then re-raise.
+        published: list[dict[str, Any]] = []
+        committed_targets: list[Path] = []
+        try:
+            for artifact_path, sidecar, staged_sidecar, artifact in prepared:
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staging_subdir / artifact_path.name, artifact_path)
+                committed_targets.append(artifact_path)
+                if sidecar is not None and staged_sidecar is not None:
+                    sidecar.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged_sidecar, sidecar)
+                    committed_targets.append(sidecar)
+                published.append(artifact)
+        except Exception:
+            _teardown_staging()
+            raise
+        else:
+            _teardown_staging()
+        return published
 
 
 def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = False) -> Path:
@@ -247,6 +275,42 @@ def _atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = False
         if owned:
             with suppress(FileNotFoundError):
                 os.unlink(str(target))
+        raise
+
+
+def _stage_file_blob(blob: _Blob, staged_path: Path) -> None:
+    """Copy a file-path blob into ``staged_path`` inside the staging subdir.
+
+    Validates the on-disk magic bytes via :func:`fast_validate_content_type`
+    against ``blob.content_type`` before copying. Handles cross-device
+    sources via streamed copy + size/SHA verification. The caller is
+    responsible for keeping ``staged_path`` inside a directory it owns and
+    for unlinking the entire staging directory on failure.
+    """
+    if blob.file_path is None:
+        raise OutputError("file_path blob has no file_path.")
+    if not blob.file_path.exists():
+        raise OutputError(f"download was incomplete: {blob.file_path} does not exist")
+    if blob.observed <= 0:
+        raise OutputError(f"download was empty: {blob.file_path}")
+    _validate_blob_magic(blob)
+    source_resolved = blob.file_path.resolve()
+    staged_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=staged_path.parent, prefix=f".{staged_path.name}.", suffix=".tmp")
+    try:
+        with source_resolved.open("rb") as source, os.fdopen(fd, "wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        copied = Path(temp_path)
+        if copied.stat().st_size != blob.observed:
+            raise OutputError("staged artifact size mismatch")
+        if blob.sha256 is not None and _sha256_of_file(copied) != blob.sha256:
+            raise OutputError("staged artifact SHA-256 mismatch")
+        os.replace(copied, staged_path)
+    except Exception:
+        with suppress(FileNotFoundError):
+            Path(temp_path).unlink()
         raise
 
 
