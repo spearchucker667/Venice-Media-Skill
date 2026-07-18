@@ -442,7 +442,7 @@ Earlier drafts allowed `*.amazonaws.com`, `*.cloudflarestorage.com`, `*.googleap
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-16 | Security Audit | Initial threat model based on comprehensive audit |
 | 1.1.0 | 2026-07-17 | Hardening sweep | Documented P0/P1 fixes (host separation, true streaming, resolver injection, in-memory vs file-mode defaults, typed `PublicHttpError`), added Known Limitations of the current SSRF protection, re-assessed VMS-005/007/008/013. |
-| 1.2.0 | 2026-07-18 | Remediation audit | All 28 VMS findings (VMS-001 through VMS-028) remediated; consent, quote, payload, download, transport, concurrency, and CI controls verified. Release readiness achieved.
+| 1.2.0 | 2026-07-18 | Remediation audit | Initial VMS-001 through VMS-028 remediation baseline. A follow-up deep audit found additional release blockers, so release readiness requires current exact-commit validation rather than this historical closure claim. |
 
 ---
 

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from venice_media_skill.client import ApiResponse
-from venice_media_skill.errors import ContentValidationError
+from venice_media_skill.errors import ContentValidationError, OutputError
 from venice_media_skill.output import ArtifactWriter
 
 _PNG = (
@@ -200,3 +201,161 @@ def test_b64_json_png_happy_path(tmp_path: Path) -> None:
     )
     assert Path(artifacts[0]["path"]).read_bytes() == _PNG
     assert artifacts[0]["content_type"] == "image/png"
+
+
+def _two_png_response() -> ApiResponse:
+    encoded = base64.b64encode(_PNG).decode()
+    return ApiResponse(
+        200,
+        "application/json",
+        {},
+        json_data={"data": [{"b64_json": encoded}, {"b64_json": encoded}]},
+    )
+
+
+def test_second_artifact_publish_failure_rolls_back_first(tmp_path: Path) -> None:
+    """A failed second final rename must not leave a partial batch."""
+    import venice_media_skill.output as output_module
+
+    real_replace = output_module.os.replace
+
+    def fail_second_final(src: str | Path, dst: str | Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        if destination.parent == tmp_path and destination.name == "batch-2.png" and "backups" not in source.parts:
+            raise OSError("simulated second publish failure")
+        real_replace(src, dst)
+
+    with (
+        patch.object(output_module.os, "replace", side_effect=fail_second_final),
+        pytest.raises(OSError, match="simulated second publish failure"),
+    ):
+        ArtifactWriter(tmp_path).save_response(
+            _two_png_response(),
+            operation="image.generate",
+            output_dir=None,
+            filename="batch.png",
+            overwrite=False,
+            write_metadata=False,
+            metadata={},
+        )
+
+    assert list(tmp_path.glob("*.png")) == []
+    assert not (tmp_path / ".venice-media-staging").exists()
+
+
+def test_sidecar_publish_failure_rolls_back_artifacts_and_sidecars(tmp_path: Path) -> None:
+    """A failed metadata publish must undo every earlier final rename."""
+    import venice_media_skill.output as output_module
+
+    real_replace = output_module.os.replace
+
+    def fail_second_sidecar(src: str | Path, dst: str | Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        if (
+            destination.parent == tmp_path
+            and destination.name == "batch-2.png.metadata.json"
+            and "backups" not in source.parts
+        ):
+            raise OSError("simulated sidecar publish failure")
+        real_replace(src, dst)
+
+    with (
+        patch.object(output_module.os, "replace", side_effect=fail_second_sidecar),
+        pytest.raises(OSError, match="simulated sidecar publish failure"),
+    ):
+        ArtifactWriter(tmp_path).save_response(
+            _two_png_response(),
+            operation="image.generate",
+            output_dir=None,
+            filename="batch.png",
+            overwrite=False,
+            write_metadata=True,
+            metadata={"model": "test"},
+        )
+
+    assert [path for path in tmp_path.iterdir() if path.is_file()] == []
+    assert not (tmp_path / ".venice-media-staging").exists()
+
+
+def test_overwrite_publish_failure_restores_existing_batch(tmp_path: Path) -> None:
+    """Rollback restores every pre-existing artifact and metadata sidecar."""
+    import venice_media_skill.output as output_module
+
+    originals = {
+        "batch-1.png": b"old-image-one",
+        "batch-1.png.metadata.json": b"old-metadata-one",
+        "batch-2.png": b"old-image-two",
+        "batch-2.png.metadata.json": b"old-metadata-two",
+    }
+    for name, content in originals.items():
+        (tmp_path / name).write_bytes(content)
+
+    real_replace = output_module.os.replace
+
+    def fail_second_sidecar(src: str | Path, dst: str | Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        if (
+            destination.parent == tmp_path
+            and destination.name == "batch-2.png.metadata.json"
+            and "backups" not in source.parts
+        ):
+            raise OSError("simulated overwrite publish failure")
+        real_replace(src, dst)
+
+    with (
+        patch.object(output_module.os, "replace", side_effect=fail_second_sidecar),
+        pytest.raises(OSError, match="simulated overwrite publish failure"),
+    ):
+        ArtifactWriter(tmp_path).save_response(
+            _two_png_response(),
+            operation="image.generate",
+            output_dir=None,
+            filename="batch.png",
+            overwrite=True,
+            write_metadata=True,
+            metadata={"model": "test"},
+        )
+
+    assert {name: (tmp_path / name).read_bytes() for name in originals} == originals
+    assert not (tmp_path / ".venice-media-staging").exists()
+
+
+def test_incomplete_rollback_retains_backups_and_reports_recovery_path(tmp_path: Path) -> None:
+    """Rollback failure must preserve backups instead of deleting recovery evidence."""
+    import venice_media_skill.output as output_module
+
+    for name in ("batch-1.png", "batch-2.png"):
+        (tmp_path / name).write_bytes(f"old-{name}".encode())
+
+    real_replace = output_module.os.replace
+
+    def fail_publish_and_restore(src: str | Path, dst: str | Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        if "backups" in source.parts:
+            raise OSError("simulated restore failure")
+        if destination.parent == tmp_path and destination.name == "batch-2.png":
+            raise OSError("simulated second publish failure")
+        real_replace(src, dst)
+
+    with (
+        patch.object(output_module.os, "replace", side_effect=fail_publish_and_restore),
+        pytest.raises(OutputError, match="Recovery files remain"),
+    ):
+        ArtifactWriter(tmp_path).save_response(
+            _two_png_response(),
+            operation="image.generate",
+            output_dir=None,
+            filename="batch.png",
+            overwrite=True,
+            write_metadata=False,
+            metadata={},
+        )
+
+    transactions = list((tmp_path / ".venice-media-staging").glob("tx-*"))
+    assert len(transactions) == 1
+    backups = sorted((transactions[0] / "backups").iterdir())
+    assert [path.read_bytes() for path in backups] == [b"old-batch-1.png", b"old-batch-2.png"]

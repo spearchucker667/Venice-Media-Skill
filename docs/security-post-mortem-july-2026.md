@@ -19,8 +19,8 @@ This document summarizes the findings and remediation efforts from the July 2026
 ### P2-06: Transactional Output Directory
 - **Commit:** `240d19b`
 - **Issue:** Multi-artifact outputs could leave partial files on failure
-- **Fix:** Implemented two-phase commit with staging directory and atomic moves
-- **Impact:** Ensures all-or-nothing artifact persistence
+- **Fix:** Implemented staged publication with rollback of already-published files and restoration of overwritten targets when a synchronous publish step fails
+- **Impact:** Prevents partial batches on handled publication errors; process termination or rollback failure retains the transaction directory for operator recovery rather than claiming filesystem-wide atomicity
 
 ### P2-07: Auth Path Validation Hardening
 - **Commit:** `d51cc3b`
@@ -35,14 +35,13 @@ This document summarizes the findings and remediation efforts from the July 2026
 ## Verification
 
 All fixes have been verified through:
-- Unit tests with full coverage
-- Integration tests
+- Unit and integration tests above the repository's configured 80% coverage gate
 - `validate.sh` gate (mypy, ruff, pytest, schema drift check)
 - CI pipeline (quality, smoke tests, security scans)
 
 ## Conclusion
 
-The Venice Media Skill is now at **Release Readiness** with all critical and high-severity issues resolved. The threat model has been updated to reflect these changes (Version 1.2.0).
+This remediation established the initial 1.2.0 hardening baseline. A follow-up deep audit found additional release blockers; release readiness must be reassessed against the current audit backlog and an exact green commit rather than inferred from this historical post-mortem.
 
 ## Next Steps
 

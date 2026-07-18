@@ -173,27 +173,70 @@ class ArtifactWriter:
             _teardown_staging()
             raise
 
-        # Phase 2: publish staged → final with per-file atomicity.  An
-        # exception here is non-recoverable: rollback any partial commits
-        # and the staging dir, then re-raise.
+        # Phase 2: publish staged → final with per-file atomicity. Existing
+        # targets are first moved into transaction-local backups. If any
+        # later publish fails, remove newly published targets and restore
+        # every backup before surfacing the original error.
         published: list[dict[str, Any]] = []
+        publish_ops: list[tuple[Path, Path]] = []
+        for artifact_path, sidecar, staged_sidecar, _artifact in prepared:
+            publish_ops.append((staging_subdir / artifact_path.name, artifact_path))
+            if sidecar is not None and staged_sidecar is not None:
+                publish_ops.append((staged_sidecar, sidecar))
+
+        backup_dir = staging_subdir / "backups"
+        backups: list[tuple[Path, Path]] = []
         committed_targets: list[Path] = []
         try:
-            for artifact_path, sidecar, staged_sidecar, artifact in prepared:
-                artifact_path.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(staging_subdir / artifact_path.name, artifact_path)
-                committed_targets.append(artifact_path)
-                if sidecar is not None and staged_sidecar is not None:
-                    sidecar.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(staged_sidecar, sidecar)
-                    committed_targets.append(sidecar)
+            for staged_path, final_path in publish_ops:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                if final_path.exists():
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    backup_path = backup_dir / f"{len(backups):04d}-{final_path.name}"
+                    os.replace(final_path, backup_path)
+                    backups.append((final_path, backup_path))
+                os.replace(staged_path, final_path)
+                committed_targets.append(final_path)
+            for _artifact_path, _sidecar, _staged_sidecar, artifact in prepared:
                 published.append(artifact)
-        except Exception:
+        except Exception as exc:
+            rollback_errors = _rollback_published_batch(committed_targets, backups)
+            if rollback_errors:
+                recovery_path = staging_subdir.resolve()
+                details = "; ".join(rollback_errors)
+                raise OutputError(
+                    "Artifact publication failed and rollback was incomplete. "
+                    f"Recovery files remain at {recovery_path}: {details}"
+                ) from exc
             _teardown_staging()
             raise
         else:
             _teardown_staging()
         return published
+
+
+def _rollback_published_batch(
+    committed_targets: list[Path],
+    backups: list[tuple[Path, Path]],
+) -> list[str]:
+    """Best-effort rollback for a failed multi-file publish.
+
+    Returns human-readable recovery errors. The caller retains the staging
+    transaction directory when this list is non-empty so an operator can
+    recover any backup that could not be restored automatically.
+    """
+    errors: list[str] = []
+    for target in reversed(committed_targets):
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"could not remove published target {target}: {exc}")
+    for target, backup in reversed(backups):
+        try:
+            os.replace(backup, target)
+        except OSError as exc:
+            errors.append(f"could not restore backup {backup} to {target}: {exc}")
+    return errors
 
 
 def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = False) -> Path:
