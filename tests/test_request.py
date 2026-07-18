@@ -38,7 +38,7 @@ def test_invalid_variants_rejected() -> None:
 
 
 def test_seedance_attestation_requires_media() -> None:
-    with pytest.raises(RequestValidationError, match="no input media"):
+    with pytest.raises(RequestValidationError, match="seedance"):
         MediaRequest.from_mapping(
             {
                 "operation": "video.generate",

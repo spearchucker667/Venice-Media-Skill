@@ -45,9 +45,7 @@ def test_dry_run_cli_without_api_key(tmp_path: Path, monkeypatch: object, capsys
     assert payload["status"] == "dry_run"
 
 
-def test_model_less_plan_without_api_key(
-    tmp_path: Path, monkeypatch: object, capsys: object
-) -> None:
+def test_model_less_plan_without_api_key(tmp_path: Path, monkeypatch: object, capsys: object) -> None:
     monkeypatch.delenv("VENICE_API_KEY", raising=False)  # type: ignore[attr-defined]
     monkeypatch.setenv("VENICE_MEDIA_CONFIG_DIR", str(tmp_path / "config"))  # type: ignore[attr-defined]
     monkeypatch.setenv("VENICE_MEDIA_CACHE_DIR", str(tmp_path / "cache"))  # type: ignore[attr-defined]

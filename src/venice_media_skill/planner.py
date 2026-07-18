@@ -76,15 +76,9 @@ class Planner:
             "questions": questions,
             "defaults": _defaults_for_operation(operation),
             "next_step": (
-                (
-                    "Select a model, then call plan again with --model to obtain "
-                    "model-specific questions."
-                )
+                ("Select a model, then call plan again with --model to obtain model-specific questions.")
                 if selected is None
-                else (
-                    "Collect missing answers, create a request manifest, then run "
-                    "venice-media run <manifest>."
-                )
+                else ("Collect missing answers, create a request manifest, then run venice-media run <manifest>.")
             ),
         }
 
@@ -112,6 +106,20 @@ def _rank_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(models, key=key)
 
 
+def _constraints_lookup(model_spec: dict[str, Any]) -> dict[str, Any]:
+    """Read constraints from ``model_spec`` directly or from a nested
+    ``model_spec.constraints`` for older snapshots.
+
+    The Venice API sometimes nests constraints one level deeper. We
+    prefer the canonical location and fall back transparently so older
+    snapshots continue to work.
+    """
+    nested = _dict_value(model_spec, "constraints")
+    if nested:
+        return nested
+    return model_spec
+
+
 def _questions_for_model(
     operation: str,
     model: dict[str, Any],
@@ -119,7 +127,7 @@ def _questions_for_model(
     prompt: str | None,
 ) -> list[dict[str, Any]]:
     model_spec = _dict_value(model, "model_spec")
-    constraints = _dict_value(model_spec, "constraints")
+    constraints = _constraints_lookup(model_spec)
     questions: list[dict[str, Any]] = []
     if not prompt and operation not in {
         "image.upscale",
@@ -132,9 +140,7 @@ def _questions_for_model(
         aspect_ratios = _list_value(constraints, "aspectRatios", "aspect_ratios")
         resolutions = _list_value(constraints, "resolutions")
         if aspect_ratios:
-            questions.append(
-                _question("parameters.aspect_ratio", False, "What aspect ratio?", aspect_ratios)
-            )
+            questions.append(_question("parameters.aspect_ratio", False, "What aspect ratio?", aspect_ratios))
         else:
             divisor = constraints.get("widthHeightDivisor", 8)
             questions.append(
@@ -146,14 +152,10 @@ def _questions_for_model(
                 )
             )
         if resolutions:
-            questions.append(
-                _question("parameters.resolution", False, "What resolution tier?", resolutions)
-            )
+            questions.append(_question("parameters.resolution", False, "What resolution tier?", resolutions))
         qualities = _list_value(constraints, "qualities")
         if qualities:
-            questions.append(
-                _question("parameters.quality", False, "What quality tier?", qualities)
-            )
+            questions.append(_question("parameters.quality", False, "What quality tier?", qualities))
         steps = constraints.get("steps")
         if isinstance(steps, dict):
             questions.append(
@@ -212,9 +214,7 @@ def _questions_for_model(
                 )
             )
         if resolutions:
-            questions.append(
-                _question("parameters.resolution", False, "What output resolution?", resolutions)
-            )
+            questions.append(_question("parameters.resolution", False, "What output resolution?", resolutions))
         questions.append(
             _question(
                 "parameters.output_format",
@@ -227,13 +227,9 @@ def _questions_for_model(
     elif operation == "image.upscale":
         questions.extend(
             [
-                _question(
-                    "inputs.image", True, "Which local image path or public URL should be upscaled?"
-                ),
+                _question("inputs.image", True, "Which local image path or public URL should be upscaled?"),
                 _question("parameters.scale", False, "Upscale factor?", [2, 4], default=2),
-                _question(
-                    "parameters.creativity", False, "Detail creativity (0.0-0.02)?", default=0.01
-                ),
+                _question("parameters.creativity", False, "Detail creativity (0.0-0.02)?", default=0.01),
             ]
         )
     elif operation == "image.background_remove":
@@ -251,17 +247,11 @@ def _questions_for_model(
         if durations:
             questions.append(_question("parameters.duration", True, "Video duration?", durations))
         else:
-            questions.append(
-                _question("parameters.duration", True, "Video duration?", default="5s")
-            )
+            questions.append(_question("parameters.duration", True, "Video duration?", default="5s"))
         if aspect_ratios:
-            questions.append(
-                _question("parameters.aspect_ratio", False, "Video aspect ratio?", aspect_ratios)
-            )
+            questions.append(_question("parameters.aspect_ratio", False, "Video aspect ratio?", aspect_ratios))
         if resolutions:
-            questions.append(
-                _question("parameters.resolution", False, "Video resolution?", resolutions)
-            )
+            questions.append(_question("parameters.resolution", False, "Video resolution?", resolutions))
         if constraints.get("audio_configurable"):
             questions.append(
                 _question(
@@ -274,22 +264,14 @@ def _questions_for_model(
             )
         model_type = str(constraints.get("model_type", ""))
         if "image-to-video" in model_type:
-            questions.append(
-                _question("inputs.image", True, "Which first-frame image should drive the video?")
-            )
-        questions.append(
-            _question(
-                "parameters.negative_prompt", False, "Anything the video should avoid?", default=""
-            )
-        )
+            questions.append(_question("inputs.image", True, "Which first-frame image should drive the video?"))
+        questions.append(_question("parameters.negative_prompt", False, "Anything the video should avoid?", default=""))
     elif operation == "audio.tts":
         voices = _list_value(constraints, "voices") or _list_value(model_spec, "voices")
         if voices:
             questions.append(_question("parameters.voice", True, "Which voice?", voices))
         else:
-            questions.append(
-                _question("parameters.voice", True, "Which Venice voice should be used?")
-            )
+            questions.append(_question("parameters.voice", True, "Which Venice voice should be used?"))
         questions.extend(
             [
                 _question(
@@ -305,13 +287,11 @@ def _questions_for_model(
     elif operation == "audio.generate":
         durations = _list_value(constraints, "durations", "duration_seconds")
         if durations:
-            questions.append(
-                _question("parameters.duration_seconds", False, "Audio duration?", durations)
-            )
+            questions.append(_question("parameters.duration_seconds", False, "Audio duration?", durations))
         if constraints.get("supports_force_instrumental"):
             questions.append(
                 _question(
-                    "parameters.force_instrumental",
+                    "parameters.instrumental",
                     False,
                     "Instrumental only?",
                     [True, False],
@@ -321,16 +301,14 @@ def _questions_for_model(
         if constraints.get("supports_lyrics"):
             questions.append(
                 _question(
-                    "parameters.lyrics",
+                    "parameters.lyrics_prompt",
                     False,
                     "Provide lyrics, or leave blank for instrumental/optimizer behavior?",
                     default="",
                 )
             )
     elif operation == "audio.transcribe":
-        questions.append(
-            _question("inputs.audio", True, "Which local audio file should be transcribed?")
-        )
+        questions.append(_question("inputs.audio", True, "Which local audio file should be transcribed?"))
     return questions
 
 
@@ -369,20 +347,21 @@ def _list_value(mapping: dict[str, Any], *keys: str) -> list[Any]:
 
 
 def _defaults_for_operation(operation: str) -> dict[str, Any]:
+    """Return ``{parameters: {...}, execution: {...}}`` so the host agent
+    can see at a glance which fields are provider-controlled and which
+    fields are runner policies. Mixing them in a flat dict is no longer
+    supported.
+    """
+    params: dict[str, Any] = {}
+    execution: dict[str, Any] = {"quote_first": True, "wait": True}
     if operation == "image.generate":
-        return {
-            "safe_mode": False,
-            "hide_watermark": True,
-            "format": "webp",
-            "variants": 1,
-            "return_binary": True,
-        }
-    if operation in {"image.edit", "image.multi_edit"}:
-        return {"safe_mode": False, "output_format": "png"}
-    if operation == "video.generate":
-        return {"audio": True, "quote_first": True, "wait": True}
-    if operation == "audio.tts":
-        return {"response_format": "mp3", "speed": 1.0}
-    if operation == "audio.generate":
-        return {"quote_first": True, "wait": True}
-    return {}
+        params.update({"safe_mode": False, "hide_watermark": True, "format": "webp", "variants": 1})
+    elif operation in {"image.edit", "image.multi_edit"}:
+        params.update({"safe_mode": False, "output_format": "png"})
+    elif operation == "video.generate":
+        params["audio"] = True
+    elif operation == "audio.tts":
+        params.update({"response_format": "mp3", "speed": 1.0})
+    elif operation == "audio.generate":
+        pass
+    return {"parameters": params, "execution": execution}

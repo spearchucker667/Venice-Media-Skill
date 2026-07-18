@@ -57,17 +57,51 @@ Source = "https://github.com/spearchucker667/venice-media-skill"
 packages = ["src/venice_media_skill"]
 artifacts = ["src/venice_media_skill/assets/**"]
 
-[tool.pytest.ini_options]
+
+
+# Explicit sdist allowlist. Hatchling defaults to MANIFEST.in-style
+# recursive-include which can sweep in stray virtualenvs, caches, and
+# credentials when those are absent from .gitignore. The allowlist below
+# limits the source distribution to the directories and files that are
+# documented as part of the public release.
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/skills",
+  "/adapters",
+  "/references",
+  "/docs",
+  "/examples",
+  "/scripts",
+  "/.github",
+  "/README.md",
+  "/LICENSE",
+  "/CHANGELOG.md",
+  "/SECURITY.md",
+  "/CONTRIBUTING.md",
+  "/CODE_OF_CONDUCT.md",
+  "/THIRD_PARTY_NOTICES.md",
+  "/AGENTS.md",
+  "/pyproject.toml",
+  "/MANIFEST.in",
+]
+
+
+[tool.pytest.ini_options] 
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py311"
-line-length = 100
+line-length = 120
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "B017"]
 
 [tool.mypy]
 python_version = "3.11"

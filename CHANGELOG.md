@@ -12,6 +12,39 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 > Changes that have been committed but not yet released in a version.
 
+### 🔐 Security
+
+| ID | Description | Impact |
+|----|-------------|--------|
+| **P0-01** | Seedance consents are now bound to a persisted challenge that the agent must approve through `venice-media approve-consent`. Arbitrary `parameters.consents` is rejected at manifest validation. | Critical |
+| **P0-02** | Paid queued video/audio generation now requires a hash-bound quote approval via `venice-media approve-quote`. The runner refuses to queue if the canonical payload hash, the observed cost, or the recorded maximum cost disagrees with the approval. | Critical |
+| **P0-03** | Per-operation payload builders reject reserved keys (`model`, `prompt`, `consents`, `queue_id`, `download_url`, `image_url`, transport controls, …) inside `parameters`. Quote and queue payloads are derived from the same canonical hash. | Critical |
+| **P0-04** | Public media URLs are validated *before every redirect hop*: HTTPS-only, allow-listed Venice CDN hosts, fail-closed DNS, and non-global resolved IPs (loopback, private, link-local, multicast, metadata) are blocked. Authenticated API calls never follow redirects. | Critical |
+| **P0-05** | Streaming downloads enforce both `Content-Length` (pre-flight) and an incremental byte cap while iterating chunks, with SHA-256 computed in flight and partial temp files removed on overflow. | Critical |
+| **P0-06** | Magic-byte validation is now fail-closed for every supported media type (PNG, JPEG, RIFF+WEBP, RIFF+WAVE, MP4 ftyp, JSON, text). Unknown or mislabeled content is rejected. Decoded base64/JSON artifacts are re-validated. | Critical |
+
+### 🧱 Architecture
+
+| Change | Note |
+|--------|------|
+| Per-operation payload builders | `venice_media_skill.payloads.build_image_*`/`build_video_*`/`build_audio_*`/`build_tts`/`build_transcribe` are the single authority for what reaches the provider. |
+| Consent + quote stores | New modules `consent.py` and `approval.py` persist challenges and approvals with hash binding. |
+| Fail-closed downloads | `VeniceClient.download_public_url` no longer follows redirects and validates every hop before issuing the next request. |
+| `reserved.py` constants | Shared set of reserved / transport-control keys that both `request.py` and `payloads.py` consult. |
+| `planning` fields split | Planner now returns `{parameters: {...}, execution: {...}}` keeping provider defaults and execution policy clearly separated. Music plans emit `parameters.lyrics_prompt` (canonical) and `parameters.instrumental`, not the deprecated aliases. |
+
+### 🧪 Tests
+
+| Class / test | Asserts |
+|--------------|---------|
+| `TestReservedParameterRejection` | All reserved keys blocked; `parameters.consents`, `parameters.model`, `parameters.prompt`, `parameters.image_url`, `parameters.download_url` reach `ReservedParameterError`. |
+| `TestRedirectSafeSSRF` | HTTP, loopback, private, link-local, multicast, metadata IPs all rejected; redirect-to-loopback blocked *before* the second hop; DNS failure fail-closed. |
+| `TestStreamedDownloadSafety` | Content-Length over-cap rejected before body; unbounded stream aborted at byte cap. |
+| `TestFailClosedMagicBytes` | Executable/ELF/random bytes rejected; full RIFF+WEBP and RIFF+WAVE signatures required; unknown MIME rejected. |
+| `TestConsentChallengeStateMachine` | Challenge persisted, recoverable, blocked-until-approval, attached-only-on-match, unacknowledged policy rejected. |
+| `TestQuoteApprovalBinding` | Single-use enforcement, hash-mismatch detected, max-cost breach rejected. |
+| `TestContractAlignment` | `model` (canonical) emitted, not `modelId`; upscale uses `creativity` + `scale` only; quote hash equals queue hash. |
+
 ---
 
 ## 🚀 [0.1.0] - 2026-07-16

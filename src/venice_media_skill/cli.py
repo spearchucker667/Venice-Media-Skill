@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import argparse
+import importlib.resources as importlib_resources
 import json
+import os
 import platform
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import yaml
 
 from . import __version__
 from .catalog import ModelCatalog
 from .client import VeniceClient
 from .config import Settings
-from .errors import ApiError, ConsentRequired, VeniceMediaError
+from .consent import ConsentStore, QuoteApprovalStore, ensure_seedance_fact
+from .errors import (
+    ApiError,
+    ConsentApprovalMissing,
+    ConsentApprovalRequired,
+    ConsentRequired,
+    NetworkSafetyError,
+    PayloadValidationError,
+    QuoteApprovalMismatch,
+    QuoteApprovalRequired,
+    RequestValidationError,
+    ReservedParameterError,
+    VeniceMediaError,
+)
 from .installer import SUPPORTED_HOSTS, SUPPORTED_SCOPES, install_skill
 from .jobs import JobStore
 from .output import ArtifactWriter
@@ -32,9 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Agent-friendly Venice API media bridge.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument(
-        "--compact", action="store_true", help="Emit compact JSON instead of indented JSON."
-    )
+    parser.add_argument("--compact", action="store_true", help="Emit compact JSON instead of indented JSON.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser(
@@ -46,9 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--type", default="all", help="Model type accepted by GET /models.")
     models.add_argument("--refresh", action="store_true", help="Ignore the local one-hour cache.")
 
-    plan = subparsers.add_parser(
-        "plan", help="Return model-aware questions for a requested operation."
-    )
+    plan = subparsers.add_parser("plan", help="Return model-aware questions for a requested operation.")
     plan.add_argument("operation")
     plan.add_argument("--prompt")
     plan.add_argument("--model")
@@ -75,7 +88,37 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "path",
         nargs="?",
-        default=str(Path(__file__).resolve().parents[2] / "references" / "venice-openapi.yaml"),
+        help="Path to a Venice OpenAPI yaml file. Defaults to the bundled snapshot.",
+    )
+
+    approve_consent = subparsers.add_parser(
+        "approve-consent",
+        help="Approve a persisted Seedance consent challenge bound to a request.",
+    )
+    approve_consent.add_argument("challenge_id")
+    approve_consent.add_argument(
+        "--acknowledge-policy",
+        action="store_true",
+        help="Required: explicitly confirm the user has read the provider policy text.",
+    )
+    approve_consent.add_argument(
+        "--max-cost",
+        type=float,
+        default=None,
+        help="Optional maximum USD cost willing to be charged for this request.",
+    )
+
+    approve_quote = subparsers.add_parser(
+        "approve-quote",
+        help="Record a hash-bound quote approval so the runner may queue the request.",
+    )
+    approve_quote.add_argument("operation")
+    approve_quote.add_argument("payload_hash")
+    approve_quote.add_argument("--max-cost", type=float, required=True)
+    approve_quote.add_argument(
+        "--quote",
+        required=True,
+        help="Path to a JSON file containing the Venice quote response that the user reviewed.",
     )
 
     jobs = subparsers.add_parser("jobs", help="Inspect durable local queue records.")
@@ -91,22 +134,83 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         payload = _dispatch(args)
+    except ConsentApprovalRequired as exc:
+        _emit(
+            {
+                "status": "consent_required",
+                "error_type": "consent_required",
+                "challenge": redact_data(exc.challenge.__dict__),
+                "next_step": (
+                    f"Run `venice-media approve-consent {exc.challenge.challenge_id}"
+                    " --acknowledge-policy --max-cost <USD>` after the user has "
+                    "reviewed the policy_text."
+                ),
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 5
+    except QuoteApprovalRequired as exc:
+        _emit(
+            {
+                "status": "quote_approval_required",
+                "error_type": "quote_approval_required",
+                "operation": exc.operation,
+                "payload_hash": exc.payload_hash,
+                "quote": redact_data(exc.quote),
+                "next_step": (
+                    f"Run `venice-media approve-quote {exc.operation} "
+                    f"{exc.payload_hash} --quote <path-to-quote.json> "
+                    f"--max-cost {exc.quote.get('quote', 'UNKNOWN')}` "
+                    f"after the user has reviewed the quote response."
+                ),
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 6
     except ConsentRequired as exc:
         _emit(
             {
                 "status": "consent_required",
-                "error": str(exc),
+                "error_type": "consent_required",
                 "consent": redact_data(exc.payload),
                 "next_step": (
-                    "Present the exact policy_text to the user. Only after explicit confirmation "
-                    "that they own or have legal consent for every depicted likeness, set "
-                    "attestations.seedance_face_consent=true and resubmit the same request."
+                    "Present the policy text to the user. Only after explicit confirmation "
+                    "that they own or have legal consent for every depicted likeness should "
+                    "the agent re-submit the same request, at which point the bridge will "
+                    "issue a fresh challenge ID via approve-consent."
                 ),
             },
             compact=args.compact,
             stream=sys.stderr,
         )
         return 4
+    except NetworkSafetyError as exc:
+        _emit(
+            {
+                "status": "error",
+                "error_type": "network_safety",
+                "url": exc.url,
+                "reason": exc.reason,
+                "resolved_ip": exc.resolved_ip,
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 7
+    except QuoteApprovalMismatch as exc:
+        _emit(
+            {
+                "status": "error",
+                "error_type": "quote_approval_mismatch",
+                "approved_hash": exc.approved_hash,
+                "current_hash": exc.current_hash,
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 8
     except ApiError as exc:
         _emit(
             {
@@ -115,13 +219,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status_code": exc.status_code,
                 "message": exc.message,
                 "request_id": exc.request_id,
+                "cause": exc.cause,
                 "details": redact_data(exc.payload),
             },
             compact=args.compact,
             stream=sys.stderr,
         )
         return 3
-    except (VeniceMediaError, ValueError, OSError) as exc:
+    except httpx.HTTPError as exc:
+        _emit(
+            {
+                "status": "error",
+                "error_type": "transport_error",
+                "transport": type(exc).__name__,
+                "message": str(exc),
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 9
+    except (VeniceMediaError, PayloadValidationError, ReservedParameterError, ValueError, OSError) as exc:
         _emit(
             {"status": "error", "error_type": type(exc).__name__, "message": str(exc)},
             compact=args.compact,
@@ -144,17 +261,23 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
         if args.output:
             target = Path(args.output).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             return {"status": "written", "path": str(target.resolve())}
         return payload
     if args.command == "validate-openapi":
-        return _validate_openapi(Path(args.path))
+        path = _resolve_bundled_openapi(args.path)
+        return _validate_openapi(path)
 
     settings = Settings.load(require_api_key=False)
     settings.ensure_directories()
     jobs = JobStore(settings.jobs_dir)
+    consent_store = ConsentStore(settings.state_dir / "consent_approvals.json")
+    quote_store = QuoteApprovalStore(settings.state_dir / "quote_approvals.json")
+
+    if args.command == "approve-consent":
+        return _approve_consent(consent_store, args)
+    if args.command == "approve-quote":
+        return _approve_quote(quote_store, args)
     if args.command == "jobs":
         if args.jobs_command == "list":
             return jobs.list()
@@ -172,17 +295,29 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
         request = MediaRequest.from_file(args.manifest)
         if not request.execution.dry_run and not settings.api_key:
             Settings.load(require_api_key=True)
+        api_key = settings.api_key or "dry-run-placeholder"
         with VeniceClient(
             base_url=settings.base_url,
-            api_key=settings.api_key or "dry-run-placeholder",
+            api_key=api_key,
             timeout_seconds=settings.timeout_seconds,
         ) as client:
             runner = MediaRunner(
                 client=client,
                 writer=ArtifactWriter(settings.output_dir),
                 jobs=jobs,
+                consent_store=consent_store,
+                quote_store=quote_store,
             )
-            return runner.run(request)
+            try:
+                return runner.run(request)
+            except ConsentApprovalRequired as exc:
+                # Bail out before queueing so the host agent sees the
+                # consent surface and pipes it to the user.
+                raise exc
+            except QuoteApprovalRequired as exc:
+                # Same idea for paid quotes: the host needs to see the
+                # quote and present it to the user.
+                raise exc
     if not settings.api_key:
         Settings.load(require_api_key=True)
     with VeniceClient(
@@ -205,6 +340,58 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
                 refresh_models=bool(args.refresh_models),
             )
     raise ValueError(f"Unhandled command: {args.command}")
+
+
+def _approve_consent(store: ConsentStore, args: argparse.Namespace) -> dict[str, Any]:
+    if not args.acknowledge_policy:
+        raise ConsentApprovalMissing("policy-unacknowledged: --acknowledge-policy is required.")
+    approval = store.approve(
+        challenge_id=args.challenge_id,
+        confirmed_max_cost=args.max_cost,
+        acknowledge_policy=True,
+    )
+    challenge = store.load_challenge(args.challenge_id)
+    return {
+        "status": "approved",
+        "challenge_id": approval.challenge_id,
+        "payload_hash": approval.payload_hash,
+        "max_cost": approval.max_cost,
+        "approved_at": approval.approved_at,
+        "expires_at": approval.expires_at,
+        "policy_version": challenge.consent_version if challenge else "",
+        "policy_text": challenge.policy_text if challenge else "",
+    }
+
+
+def _approve_quote(store: QuoteApprovalStore, args: argparse.Namespace) -> dict[str, Any]:
+    quote_path = Path(args.quote).expanduser()
+    if not quote_path.is_file():
+        raise RequestValidationError(f"Quote file does not exist: {quote_path}")
+    try:
+        quote_payload = json.loads(quote_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RequestValidationError(f"Quote file {quote_path} is not valid JSON: {exc}") from exc
+    if not isinstance(quote_payload, dict):
+        raise RequestValidationError("Quote file must contain a JSON object.")
+    if not ensure_seedance_fact({"needs_consent": True, "consent_flow": "seedance"}):
+        # We only need the cost here; not a real seedance call.
+        pass
+    approval = store.record(
+        operation=args.operation,
+        model="",
+        payload_hash=args.payload_hash,
+        quote_response=quote_payload,
+        max_cost=float(args.max_cost),
+    )
+    return {
+        "status": "recorded",
+        "approval_id": approval.approval_id,
+        "operation": approval.operation,
+        "payload_hash": approval.payload_hash,
+        "max_cost": approval.max_cost,
+        "created_at": approval.created_at,
+        "expires_at": approval.expires_at,
+    }
 
 
 def _doctor(settings: Settings, *, online: bool) -> dict[str, Any]:
@@ -282,6 +469,38 @@ def _emit(payload: Any, *, compact: bool, stream: Any | None = None) -> None:
     else:
         text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
     print(text, file=stream)
+
+
+def _resolve_bundled_openapi(explicit: str | None) -> Path:
+    """Resolve the OpenAPI snapshot path.
+
+    Order:
+    1. Caller-supplied path (editable install / CI override).
+    2. ``REPO_TOP/references/venice-openapi.yaml`` (development layout).
+    3. ``venice_media_skill/assets/skill/references/venice-openapi.yaml``
+       packaged as a resource (installed wheel).
+    """
+    if explicit:
+        return Path(explicit)
+    repo_path = Path(__file__).resolve().parents[2] / "references" / "venice-openapi.yaml"
+    if repo_path.is_file():
+        return repo_path
+    try:
+        package_files = importlib_resources.files("venice_media_skill")
+    except ModuleNotFoundError as exc:  # pragma: no cover - safety net
+        raise OSError(
+            f"OpenAPI snapshot not found via editable layout ({repo_path}) or via the installed package: {exc}"
+        ) from exc
+    asset = package_files.joinpath("assets", "skill", "references", "venice-openapi.yaml")
+    if not asset.is_file():
+        raise OSError(f"Bundled OpenAPI snapshot is missing at: {asset}")
+    # Some YAML parsers require a real filesystem path. Copy to a temp
+    # file owned by the bridge process; the temp path is cleaned up by the
+    # OS at process exit.
+    target_fd, target_path = tempfile.mkstemp(prefix="venice-openapi-", suffix=".yaml")
+    os.close(target_fd)
+    Path(target_path).write_bytes(asset.read_bytes())
+    return Path(target_path)
 
 
 if __name__ == "__main__":

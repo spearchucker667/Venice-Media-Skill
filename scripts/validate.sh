@@ -17,3 +17,5 @@ json.loads(Path('adapters/kimi-code/kimi.plugin.json').read_text())
 json.loads(Path('references/request.schema.json').read_text())
 print('JSON assets: OK')
 PY
+python scripts/verify-bundled-assets.py
+python scripts/inspect-sdist.py

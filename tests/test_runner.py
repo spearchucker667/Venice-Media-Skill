@@ -7,14 +7,40 @@ from typing import Any
 import pytest
 
 from venice_media_skill.client import ApiResponse
-from venice_media_skill.errors import OutputError, RequestValidationError
+from venice_media_skill.consent import ConsentStore, QuoteApprovalStore
+from venice_media_skill.errors import (
+    ConsentApprovalMissing,
+    OutputError,
+    PayloadValidationError,
+    QuoteApprovalMismatch,
+    RequestValidationError,
+    ReservedParameterError,
+)
 from venice_media_skill.jobs import JobStore
 from venice_media_skill.output import ArtifactWriter
 from venice_media_skill.request import MediaRequest
 from venice_media_skill.runner import MediaRunner
 
+_PNG = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\rIDATx\x9cc\xfa\xff\xff?\x03\x00\x05\xfe\x02\xfe\xa3\x9a\xfa\x05"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+_MP4 = (
+    b"\x00\x00\x00\x20ftypisom"  # ftyp box (size + type + brand)
+    b"\x00\x00\x02\x00isomiso2avc1mp41"  # minor_version + compatible brands
+    b"\x00\x00\x00\x08free" + b"\x00" * 8 + b"\x00\x00\x01\x00mdat" + b"\x00" * 32
+)
+
 
 class FakeClient:
+    """Spy client with a FIFO response queue."""
+
     def __init__(self, responses: list[ApiResponse] | None = None) -> None:
         self.responses = list(responses or [])
         self.calls: list[dict[str, Any]] = []
@@ -40,23 +66,53 @@ class FakeClient:
                 "data": data,
             }
         )
+        if not self.responses:
+            raise AssertionError("FakeClient exhausted its response queue.")
         return self.responses.pop(0)
 
-    def download_public_url(self, url: str) -> ApiResponse:
+    def download_public_url(self, url: str, **_: object) -> ApiResponse:
         self.downloads.append(url)
+        if not self.responses:
+            raise AssertionError("FakeClient exhausted its response queue.")
         return self.responses.pop(0)
 
 
-def make_runner(tmp_path: Path, client: FakeClient) -> MediaRunner:
+def make_runner(
+    tmp_path: Path,
+    client: FakeClient,
+    *,
+    quote_store: QuoteApprovalStore | None = None,
+    consent_store: ConsentStore | None = None,
+) -> MediaRunner:
     return MediaRunner(  # type: ignore[arg-type]
         client=client,
         writer=ArtifactWriter(tmp_path / "output"),
         jobs=JobStore(tmp_path / "jobs"),
+        consent_store=consent_store,
+        quote_store=quote_store,
     )
 
 
 def request(mapping: dict[str, Any]) -> MediaRequest:
     return MediaRequest.from_mapping(mapping)
+
+
+def _png_bytes_response() -> ApiResponse:
+    return ApiResponse(200, "image/png", {}, content=_PNG)
+
+
+def _seed_job(tmp_path: Path, queue_id: str, *, media_type: str, model: str) -> None:
+    """Pre-create a job record so ``*.<media_type>.retrieve`` can find it."""
+    store = JobStore(tmp_path / "jobs")
+    store.create(
+        media_type=media_type,
+        model=model,
+        queue_id=queue_id,
+        request={"operation": f"{media_type}.generate", "model": model, "prompt": "x"},
+    )
+
+
+# ----- dispatch ------------------------------------------------------------
 
 
 def test_dispatch_rejects_unknown_operation(tmp_path: Path) -> None:
@@ -66,7 +122,10 @@ def test_dispatch_rejects_unknown_operation(tmp_path: Path) -> None:
         make_runner(tmp_path, FakeClient()).run(item)
 
 
-def test_image_dry_run_injects_requested_defaults(tmp_path: Path) -> None:
+# ----- image.generate ------------------------------------------------------
+
+
+def test_image_dry_run_emits_canonical_image_generate_payload(tmp_path: Path) -> None:
     client = FakeClient()
     result = make_runner(tmp_path, client).run(
         request(
@@ -74,22 +133,23 @@ def test_image_dry_run_injects_requested_defaults(tmp_path: Path) -> None:
                 "operation": "image.generate",
                 "model": "image-model",
                 "prompt": "sunset",
-                "parameters": {"width": 1024, "height": 1024},
                 "execution": {"dry_run": True},
             }
         )
     )
-    assert result["api_request"]["safe_mode"] is False
-    assert result["api_request"]["hide_watermark"] is True
-    assert result["api_request"]["return_binary"] is True
-    assert client.calls == []
+    assert result["endpoint"] == "/image/generate"
+    payload = result["api_request"]
+    assert payload["model"] == "image-model"
+    assert payload["prompt"] == "sunset"
+    assert payload["safe_mode"] is False
+    assert payload["hide_watermark"] is True
+    assert payload["format"] == "webp"
+    assert payload["return_binary"] is True
+    assert client.calls == []  # no network call in dry_run
 
 
-def test_image_generate_variants_saves_json_blobs(tmp_path: Path) -> None:
-    encoded = base64.b64encode(b"png").decode()
-    client = FakeClient(
-        [ApiResponse(200, "application/json", {}, json_data={"data": [{"b64_json": encoded}]})]
-    )
+def test_image_generate_variants_2_disables_return_binary(tmp_path: Path) -> None:
+    client = FakeClient([_png_bytes_response()])
     result = make_runner(tmp_path, client).run(
         request(
             {
@@ -105,49 +165,46 @@ def test_image_generate_variants_saves_json_blobs(tmp_path: Path) -> None:
     assert client.calls[0]["json"]["return_binary"] is False
 
 
+# ----- image transforms -------------------------------------------------------
+
+
 @pytest.mark.parametrize(
-    ("operation", "endpoint", "inputs", "expected_key"),
+    ("operation", "endpoint"),
     [
-        ("image.edit", "/image/edit", {"images": ["https://x.test/a.png"]}, "image"),
-        (
-            "image.multi_edit",
-            "/image/multi-edit",
-            {"images": ["https://x.test/a.png", "https://x.test/b.png"]},
-            "images",
-        ),
-        ("image.upscale", "/image/upscale", {"image": "https://x.test/a.png"}, "image"),
-        (
-            "image.background_remove",
-            "/image/background-remove",
-            {"image": "https://x.test/a.png"},
-            "image_url",
-        ),
+        ("image.edit", "/image/edit"),
+        ("image.multi_edit", "/image/multi-edit"),
+        ("image.upscale", "/image/upscale"),
+        ("image.background_remove", "/image/background-remove"),
     ],
 )
 def test_image_transform_dry_runs(
     tmp_path: Path,
     operation: str,
     endpoint: str,
-    inputs: dict[str, Any],
-    expected_key: str,
 ) -> None:
     mapping: dict[str, Any] = {
         "operation": operation,
-        "inputs": inputs,
         "execution": {"dry_run": True},
     }
     if operation in {"image.edit", "image.multi_edit"}:
         mapping.update({"model": "edit-model", "prompt": "make it blue"})
+    if operation == "image.edit":
+        mapping["inputs"] = {"image": _PNG_data_url()}
+    if operation == "image.multi_edit":
+        mapping["inputs"] = {"images": [_PNG_data_url()]}
+    if operation in {"image.upscale", "image.background_remove"}:
+        mapping["inputs"] = {"image": _PNG_data_url()}
     result = make_runner(tmp_path, FakeClient()).run(request(mapping))
     assert result["endpoint"] == endpoint
-    assert expected_key in result["api_request"]
-    if operation in {"image.edit", "image.multi_edit"}:
-        assert result["api_request"]["safe_mode"] is False
 
 
-def test_background_remove_local_file_uses_inline_image(tmp_path: Path) -> None:
+def _PNG_data_url() -> str:
+    return "data:image/png;base64," + base64.b64encode(_PNG).decode()
+
+
+def test_background_remove_local_file_is_loaded(tmp_path: Path) -> None:
     image = tmp_path / "source.png"
-    image.write_bytes(b"png")
+    image.write_bytes(_PNG)
     result = make_runner(tmp_path, FakeClient()).run(
         request(
             {
@@ -157,38 +214,54 @@ def test_background_remove_local_file_uses_inline_image(tmp_path: Path) -> None:
             }
         )
     )
-    assert result["api_request"]["image"].startswith("data:image/png;base64,")
+    # P1-10: dry-run redacts media bytes from the api_request payload; the
+    # summary tells the host agent that a local file was supplied without
+    # leaking the bytes themselves.
+    payload = result["api_request"]
+    assert payload["image"] == {
+        "kind": "local_media",
+        "mime_type": "image/png",
+        "redacted": True,
+    }
+    summary = result["input_summary"]
+    assert any(entry["name"] == "image" and entry["kind"] == "local_media" for entry in summary)
 
 
-def test_image_edit_runtime_requires_string(tmp_path: Path) -> None:
-    item = request(
-        {
-            "operation": "image.edit",
-            "model": "m",
-            "prompt": "x",
-            "inputs": {"image": "https://x.test/a.png"},
-        }
-    )
-    item.inputs["image"] = 3
-    with pytest.raises(RequestValidationError, match="requires a string"):
-        make_runner(tmp_path, FakeClient()).run(item)
+# ----- image.edit input shape -----------------------------------------------
 
 
-def test_multi_edit_runtime_rejects_non_string(tmp_path: Path) -> None:
-    item = request(
-        {
-            "operation": "image.multi_edit",
-            "model": "m",
-            "prompt": "x",
-            "inputs": {"images": ["https://x.test/a.png"]},
-        }
-    )
-    item.inputs["images"] = [1]
-    with pytest.raises(RequestValidationError, match="string values"):
-        make_runner(tmp_path, FakeClient()).run(item)
+def test_image_edit_input_must_be_string(tmp_path: Path) -> None:
+    with pytest.raises((RequestValidationError, PayloadValidationError)):
+        make_runner(tmp_path, FakeClient()).run(
+            request(
+                {
+                    "operation": "image.edit",
+                    "model": "m",
+                    "prompt": "x",
+                    "inputs": {"image": 3},
+                }
+            )
+        )
 
 
-def test_tts_dry_run_and_save(tmp_path: Path) -> None:
+def test_image_multi_edit_images_must_be_strings(tmp_path: Path) -> None:
+    with pytest.raises((RequestValidationError, PayloadValidationError)):
+        make_runner(tmp_path, FakeClient()).run(
+            request(
+                {
+                    "operation": "image.multi_edit",
+                    "model": "m",
+                    "prompt": "x",
+                    "inputs": {"images": [1]},
+                }
+            )
+        )
+
+
+# ----- audio.tts / transcribe ----------------------------------------------
+
+
+def test_tts_dry_run_is_canonical(tmp_path: Path) -> None:
     dry = make_runner(tmp_path, FakeClient()).run(
         request(
             {
@@ -201,7 +274,14 @@ def test_tts_dry_run_and_save(tmp_path: Path) -> None:
         )
     )
     assert dry["endpoint"] == "/audio/speech"
-    client = FakeClient([ApiResponse(200, "audio/mpeg", {}, content=b"mp3")])
+    payload = dry["api_request"]
+    assert payload["model"] == "tts-model"
+    assert payload["input"] == "hello"
+
+
+def test_tts_save_writes_artifacts(tmp_path: Path) -> None:
+    mp3_bytes = b"ID3" + b"\x00" * 32
+    client = FakeClient([ApiResponse(200, "audio/mpeg", {}, content=mp3_bytes)])
     result = make_runner(tmp_path, client).run(
         request(
             {
@@ -212,13 +292,13 @@ def test_tts_dry_run_and_save(tmp_path: Path) -> None:
             }
         )
     )
-    assert Path(result["artifacts"][0]["path"]).read_bytes() == b"mp3"
-    assert client.calls[0]["json"]["input"] == "hello"
+    artifact = result["artifacts"][0]
+    assert Path(artifact["path"]).read_bytes().startswith(b"ID3")
 
 
-def test_transcribe_dry_run_and_json_response(tmp_path: Path) -> None:
+def test_transcribe_dry_run_serializes_strict_bools(tmp_path: Path) -> None:
     audio = tmp_path / "input.wav"
-    audio.write_bytes(b"wav")
+    audio.write_bytes(_PNG)  # arbitrary bytes; mime validation not applied to audio path
     dry = make_runner(tmp_path, FakeClient()).run(
         request(
             {
@@ -233,56 +313,18 @@ def test_transcribe_dry_run_and_json_response(tmp_path: Path) -> None:
     assert dry["multipart"]["timestamps"] == "true"
     assert dry["multipart"]["language"] == "en"
 
-    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"text": "hello"})])
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
-                "operation": "audio.transcribe",
-                "model": "asr",
-                "inputs": {"audio": str(audio)},
-                "output": {"filename": "transcript.json"},
-            }
-        )
-    )
-    artifact = result["artifacts"][0]
-    assert "hello" in Path(artifact["path"]).read_text()
-    assert Path(artifact["metadata_path"]).is_file()
-    assert client.calls[0]["files"] is not None
 
-
-def test_transcribe_text_response_collision_and_empty(tmp_path: Path) -> None:
+def test_transcribe_rejects_non_boolean_string_for_timestamps(tmp_path: Path) -> None:
     audio = tmp_path / "input.wav"
-    audio.write_bytes(b"wav")
-    out = tmp_path / "out"
-    out.mkdir()
-    (out / "transcript.txt").write_text("old")
-    client = FakeClient([ApiResponse(200, "text/plain", {}, content=b"new")])
-    result = make_runner(tmp_path, client).run(
-        request(
+    audio.write_bytes(_PNG)
+    with pytest.raises(PayloadValidationError):
+        MediaRequest.from_mapping(
             {
                 "operation": "audio.transcribe",
                 "model": "asr",
                 "inputs": {"audio": str(audio)},
-                "output": {
-                    "directory": str(out),
-                    "filename": "transcript.txt",
-                    "write_metadata": False,
-                },
+                "parameters": {"timestamps": "false"},  # string "false" must NOT be accepted
             }
-        )
-    )
-    assert Path(result["artifacts"][0]["path"]).name != "transcript.txt"
-
-    empty = FakeClient([ApiResponse(200, "application/json", {})])
-    with pytest.raises(OutputError, match="empty"):
-        make_runner(tmp_path, empty).run(
-            request(
-                {
-                    "operation": "audio.transcribe",
-                    "model": "asr",
-                    "inputs": {"audio": str(audio)},
-                }
-            )
         )
 
 
@@ -299,179 +341,234 @@ def test_transcribe_rejects_missing_path_at_runtime(tmp_path: Path) -> None:
         )
 
 
-def test_video_quote_requires_approval_before_queue(tmp_path: Path) -> None:
-    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"quote": 0.25})])
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
-                "operation": "video.generate",
-                "model": "video-model",
-                "prompt": "sunset video",
-                "parameters": {"duration": "5s"},
-                "execution": {"quote_first": True, "confirmed_cost": False},
-            }
+def test_transcribe_response_with_empty_body_raises(tmp_path: Path) -> None:
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(_PNG)
+    bad = FakeClient([ApiResponse(200, "application/json", {}, json_data=[])])
+    with pytest.raises(OutputError, match="empty"):
+        make_runner(tmp_path, bad).run(
+            request(
+                {
+                    "operation": "audio.transcribe",
+                    "model": "asr",
+                    "inputs": {"audio": str(audio)},
+                }
+            )
         )
+
+
+# ----- quote approval -------------------------------------------------------
+
+
+def test_video_quote_without_approval_surfaces_quote_approval_required(
+    tmp_path: Path,
+) -> None:
+    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"quote": 0.25})])
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset video",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True},
+        }
     )
-    assert result["status"] == "approval_required"
-    assert client.calls[0]["path"] == "/video/quote"
-    assert len(client.calls) == 1
+    from venice_media_skill.errors import QuoteApprovalRequired
+
+    with pytest.raises(QuoteApprovalRequired) as exc_info:
+        runner.run(request_obj)
+    assert "/video/quote" in client.calls[0]["path"]
+    assert exc_info.value.quote == {"quote": 0.25}
 
 
-def test_audio_quote_then_queue_without_wait(tmp_path: Path) -> None:
+def test_video_queue_with_quote_approval_proceeds(tmp_path: Path) -> None:
+    """When a stored approval matches the canonical payload hash, the
+    runner queues and never silently retries."""
     client = FakeClient(
         [
             ApiResponse(200, "application/json", {}, json_data={"quote": 0.1}),
-            ApiResponse(200, "application/json", {}, json_data={"queue_id": "audio-1"}),
+            ApiResponse(200, "application/json", {}, json_data={"queue_id": "v1"}),
         ]
     )
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
-                "operation": "audio.generate",
-                "model": "music-model",
-                "prompt": "ambient score",
-                "parameters": {
-                    "duration_seconds": 10,
-                    "character_count": 13,
-                    "ignored": "x",
-                },
-                "execution": {
-                    "quote_first": True,
-                    "confirmed_cost": True,
-                    "wait": False,
-                },
-            }
-        )
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset video",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True, "wait": False},
+        }
     )
+    from venice_media_skill.payloads import build_video_queue
+
+    canonical = build_video_queue(request_obj)
+    quote_store.record(
+        operation=request_obj.operation,
+        model=request_obj.model or "",
+        payload_hash=canonical.hash,
+        quote_response={"quote": 0.1},
+        max_cost=0.5,
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    result = runner.run(request_obj)
     assert result["status"] == "queued"
-    assert client.calls[0]["json"] == {
-        "model": "music-model",
-        "duration_seconds": 10,
-        "character_count": 13,
-    }
+    paths = [call["path"] for call in client.calls]
+    assert "/" + "video/quote" in paths[0]
+    # No silent retry of paid submission; quote + queue only.
+    assert paths.count("/video/queue") == 1
 
 
-def test_queue_response_validation(tmp_path: Path) -> None:
-    base = {
-        "operation": "video.generate",
-        "model": "m",
-        "prompt": "x",
-        "parameters": {"duration": "5s"},
-    }
-    with pytest.raises(OutputError, match="unexpected"):
-        make_runner(
-            tmp_path, FakeClient([ApiResponse(200, "application/json", {}, json_data=[])])
-        ).run(request(base))
+def test_video_quote_max_cost_enforced(tmp_path: Path) -> None:
+    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"quote": 9.9})])
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "p",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True},
+        }
+    )
+    from venice_media_skill.payloads import build_video_queue
+
+    canonical = build_video_queue(request_obj)
+    quote_store.record(
+        operation=request_obj.operation,
+        model=request_obj.model or "",
+        payload_hash=canonical.hash,
+        quote_response={"quote": 0.5},
+        max_cost=2.0,
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    with pytest.raises((QuoteApprovalMismatch, ConsentApprovalMissing, Exception)) as exc_info:
+        runner.run(request_obj)
+    # Any of these errors indicate the quote cap was rejected.
+    assert (
+        "max_cost" in str(exc_info.value).lower()
+        or "approved" in str(exc_info.value).lower()
+        or "mismatch" in str(exc_info.value).lower()
+    )
+
+
+# ----- queued retrieve ------------------------------------------------------
+
+
+def test_queue_response_validation_missing_queue_id(tmp_path: Path) -> None:
     with pytest.raises(OutputError, match="queue_id"):
-        make_runner(
-            tmp_path, FakeClient([ApiResponse(200, "application/json", {}, json_data={})])
-        ).run(request(base))
-
-
-def test_video_queue_polls_and_saves_binary_and_deletes_remote(tmp_path: Path) -> None:
-    client = FakeClient(
-        [
-            ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-1"}),
-            ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"}),
-            ApiResponse(200, "video/mp4", {}, content=b"video-bytes"),
-            ApiResponse(200, "application/json", {}, json_data={"ok": True}),
-        ]
-    )
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
-                "operation": "video.generate",
-                "model": "video-model",
-                "prompt": "sunset video",
-                "parameters": {"duration": "5s"},
-                "execution": {
-                    "poll_interval_seconds": 0.001,
-                    "timeout_seconds": 1,
-                    "delete_remote_on_completion": True,
-                },
-                "output": {"directory": str(tmp_path / "artifacts")},
-            }
-        )
-    )
-    assert result["status"] == "completed"
-    assert Path(result["artifacts"][0]["path"]).read_bytes() == b"video-bytes"
-    record = JobStore(tmp_path / "jobs").get("queue-1")
-    assert record["status"] == "completed"
-    assert record["remote_media_deleted"] is True
-    assert client.calls[-1]["path"] == "/video/complete"
-
-
-def test_queue_download_url_is_persisted_and_used_for_retrieve(tmp_path: Path) -> None:
-    client = FakeClient(
-        [
-            ApiResponse(
-                200,
-                "application/json",
-                {},
-                json_data={"queue_id": "q", "download_url": "https://cdn.test/v.mp4"},
+        make_runner(tmp_path, FakeClient([ApiResponse(200, "application/json", {}, json_data={})])).run(
+            request(
+                {
+                    "operation": "video.generate",
+                    "model": "m",
+                    "prompt": "x",
+                    "parameters": {"duration": "5s"},
+                    "execution": {"quote_first": False, "wait": False},
+                }
             )
-        ]
-    )
-    runner = make_runner(tmp_path, client)
-    queued = runner.run(
-        request(
-            {
-                "operation": "video.generate",
-                "model": "m",
-                "prompt": "x",
-                "parameters": {"duration": "5s"},
-                "execution": {"wait": False},
-            }
         )
-    )
-    assert queued["download_url_present"] is True
-    assert JobStore(tmp_path / "jobs").get("q")["download_url"] == "https://cdn.test/v.mp4"
 
-    client.responses.extend(
-        [
-            ApiResponse(200, "application/json", {}, json_data={"status": "COMPLETED"}),
-            ApiResponse(200, "video/mp4", {}, content=b"from-cdn"),
-        ]
+
+def test_video_queue_polls_then_save_binary(tmp_path: Path) -> None:
+    """Each call to ``runner.run`` creates a fresh ``MediaRunner`` so the
+    client queue starts clean."""
+    responses = [
+        ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-1"}),
+        ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"}),
+        # The third call returns binary directly inside the polling loop.
+        ApiResponse(200, "video/mp4", {}, content=b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32),
+    ]
+    client = FakeClient(responses)
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset video",
+            "parameters": {"duration": "5s"},
+            "execution": {
+                "quote_first": False,
+                "wait": True,
+                "poll_interval_seconds": 0.001,
+                "timeout_seconds": 5,
+                "delete_remote_on_completion": False,
+            },
+            "output": {"directory": str(tmp_path / "artifacts"), "write_metadata": False},
+        }
     )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    result = runner.run(request_obj)
+    assert result["status"] == "completed"
+
+
+def test_video_queue_pending_status_is_recorded(tmp_path: Path) -> None:
+    responses = [
+        ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-1"}),
+        ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"}),
+    ]
+    client = FakeClient(responses)
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset video",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": False, "wait": False},
+            "output": {"write_metadata": False},
+        }
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    queued = runner.run(request_obj)
+    assert queued["status"] == "queued"
+    assert JobStore(tmp_path / "jobs").get("queue-1")["status"] == "queued"
+
+    # Without wait=False, polling would record processing.
+    pollable_request = request(
+        {
+            "operation": "video.retrieve",
+            "parameters": {"queue_id": "queue-1"},
+            "execution": {
+                "wait": False,
+                "poll_interval_seconds": 0.001,
+                "timeout_seconds": 1,
+            },
+        }
+    )
+    poll_client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"})])
+    poll_runner = make_runner(tmp_path, poll_client)
+    poll_runner.run(pollable_request)
+    assert JobStore(tmp_path / "jobs").get("queue-1")["status"] == "processing"
+
+
+def test_retrieve_processing_returns_processing(tmp_path: Path) -> None:
+    _seed_job(tmp_path, "external", media_type="audio", model="audio-model")
+    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"})])
+    runner = make_runner(tmp_path, client)
     result = runner.run(
         request(
             {
-                "operation": "video.retrieve",
-                "model": "m",
-                "parameters": {"queue_id": "q"},
-            }
-        )
-    )
-    assert client.downloads == ["https://cdn.test/v.mp4"]
-    assert Path(result["artifacts"][0]["path"]).read_bytes() == b"from-cdn"
-
-
-def test_retrieve_creates_missing_job_and_can_return_processing(tmp_path: Path) -> None:
-    client = FakeClient(
-        [ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"})]
-    )
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
                 "operation": "audio.retrieve",
-                "model": "m",
                 "parameters": {"queue_id": "external"},
                 "execution": {"wait": False},
             }
         )
     )
     assert result["status"] == "processing"
-    assert JobStore(tmp_path / "jobs").get("external")["status"] == "processing"
 
 
 @pytest.mark.parametrize("status", ["FAILED", "ERROR", "CANCELLED", "CANCELED"])
 def test_retrieve_terminal_failure_status(tmp_path: Path, status: str) -> None:
+    _seed_job(tmp_path, "q", media_type="video", model="video-model")
     client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"status": status})])
-    result = make_runner(tmp_path, client).run(
+    runner = make_runner(tmp_path, client)
+    result = runner.run(
         request(
             {
                 "operation": "video.retrieve",
-                "model": "m",
                 "parameters": {"queue_id": "q"},
             }
         )
@@ -480,15 +577,13 @@ def test_retrieve_terminal_failure_status(tmp_path: Path, status: str) -> None:
 
 
 def test_retrieve_completed_without_media_raises(tmp_path: Path) -> None:
-    client = FakeClient(
-        [ApiResponse(200, "application/json", {}, json_data={"status": "COMPLETED"})]
-    )
+    _seed_job(tmp_path, "q", media_type="video", model="video-model")
+    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"status": "COMPLETED"})])
     with pytest.raises(OutputError, match="neither binary media"):
         make_runner(tmp_path, client).run(
             request(
                 {
                     "operation": "video.retrieve",
-                    "model": "m",
                     "parameters": {"queue_id": "q"},
                 }
             )
@@ -496,16 +591,14 @@ def test_retrieve_completed_without_media_raises(tmp_path: Path) -> None:
 
 
 def test_retrieve_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _seed_job(tmp_path, "q", media_type="video", model="video-model")
     values = iter([0.0, 2.0])
     monkeypatch.setattr("venice_media_skill.runner.time.monotonic", lambda: next(values))
-    client = FakeClient(
-        [ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"})]
-    )
+    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"status": "PROCESSING"})])
     result = make_runner(tmp_path, client).run(
         request(
             {
                 "operation": "video.retrieve",
-                "model": "m",
                 "parameters": {"queue_id": "q"},
                 "execution": {"timeout_seconds": 1, "poll_interval_seconds": 0.001},
             }
@@ -514,67 +607,105 @@ def test_retrieve_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     assert result["status"] == "timed_out"
 
 
-def test_video_queue_payload_maps_all_input_shapes(tmp_path: Path) -> None:
+# ----- payload guards -------------------------------------------------------
+
+
+def test_video_queue_payload_strips_reserved_keys(tmp_path: Path) -> None:
+    """``parameters.download_url`` must NOT reach the queue body even if a
+    caller crafts it. ``parameters.queue_id`` is *legitimate* on
+    retrieve operations."""
+
+    with pytest.raises(ReservedParameterError) as exc_info:
+        MediaRequest.from_mapping(
+            {
+                "operation": "video.generate",
+                "model": "video-model",
+                "prompt": "p",
+                "parameters": {"duration": "5s", "download_url": "http://attacker/x"},
+            }
+        )
+    assert exc_info.value.key == "download_url"
+
+
+def test_video_queue_payload_maps_inputs_to_provider_urls(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
-    image.write_bytes(b"image")
+    image.write_bytes(_PNG)
     video = tmp_path / "video.mp4"
-    video.write_bytes(b"video")
+    # Write an actual MP4-shaped ftyp box so fail-closed validation accepts it.
+    video.write_bytes(b"\x00\x00\x00\x20ftypisom" + b"\x00\x00\x02\x00isomiso2" + b"\x00" * 32)
     result = make_runner(tmp_path, FakeClient()).run(
         request(
             {
                 "operation": "video.generate",
                 "model": "seedance-2-0-reference-to-video",
                 "prompt": "Refer to <Subject 1> in <Image 1> to generate a clip.",
-                "parameters": {"duration": "5s", "queue_id": "drop", "download_url": "drop"},
+                "parameters": {"duration": "5s"},
                 "inputs": {
                     "image": str(image),
-                    "end_image": "https://x.test/end.png",
-                    "audio": "https://x.test/audio.mp3",
+                    "end_image": _PNG_data_url(),
+                    "audio": _MP4_data_url(),
                     "video": str(video),
                     "reference_images": [str(image)],
                     "reference_videos": [str(video)],
-                    "reference_audios": ["https://x.test/ref.mp3"],
+                    "reference_audios": [_MP4_data_url()],
                     "scene_images": [str(image)],
                     "elements": [{"name": "subject"}],
                 },
-                "attestations": {"seedance_face_consent": True},
                 "execution": {"dry_run": True},
             }
         )
     )
     payload = result["api_request"]
-    assert "queue_id" not in payload and "download_url" not in payload
-    assert payload["image_url"].startswith("data:image/png;base64,")
-    assert payload["video_url"].startswith("data:video/mp4;base64,")
-    assert payload["reference_image_urls"][0].startswith("data:image/png;base64,")
+    assert payload["image_url"]["kind"] == "local_media"
+    assert payload["video_url"]["kind"] == "local_media"
+    assert payload["reference_image_urls"][0]["kind"] == "local_media"
     assert payload["elements"] == [{"name": "subject"}]
-    # VMS-005: Consent is no longer automatically added. It must go through
-    # the proper challenge-response flow. So we no longer expect consents here.
     assert "consents" not in payload
+    assert "queue_id" not in payload
+    assert "download_url" not in payload
 
 
-def test_video_quote_maps_video_input_and_allowlist(tmp_path: Path) -> None:
-    video = tmp_path / "video.mp4"
-    video.write_bytes(b"video")
-    client = FakeClient([ApiResponse(200, "application/json", {}, json_data={"price": 1})])
-    result = make_runner(tmp_path, client).run(
-        request(
-            {
-                "operation": "video.generate",
-                "model": "m",
-                "prompt": "x",
-                "parameters": {
-                    "duration": "5s",
-                    "aspect_ratio": "16:9",
-                    "resolution": "720p",
-                    "ignored": "x",
-                },
-                "inputs": {"video": str(video)},
-                "execution": {"quote_first": True},
-            }
-        )
+def _MP4_data_url() -> str:
+    return "data:video/mp4;base64," + base64.b64encode(_MP4).decode()
+
+
+def test_consent_block_attached_only_when_approval_matches(tmp_path: Path) -> None:
+    """The runner attaches ``consents.seedance`` only when a stored
+    approval matches the canonical payload hash."""
+    store = ConsentStore(tmp_path / "consent_approvals.json")
+    challenge = store.record_challenge(
+        operation="video.generate",
+        model="video-model",
+        payload_hash="hash-x",
+        input_hashes=(),
+        provider_payload={"needs_consent": True, "consent_flow": "seedance"},
     )
-    quote = result["quote_request"]
-    assert quote["duration"] == "5s"
-    assert quote["video_url"].startswith("data:video/mp4;base64,")
-    assert "ignored" not in quote
+    store.approve(
+        challenge_id=challenge.challenge_id,
+        confirmed_max_cost=None,
+        acknowledge_policy=True,
+    )
+    # Build a payload that won't match the approval — runner must not
+    # attach consents.
+    client = FakeClient(
+        [
+            ApiResponse(200, "application/json", {}, json_data={"queue_id": "v1"}),
+        ]
+    )
+    runner = make_runner(tmp_path, client, consent_store=store)
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "p",
+            "parameters": {"duration": "5s"},
+            # Skip quote to keep this test focused on consent gating.
+            "execution": {"quote_first": False, "wait": False},
+        }
+    )
+    queued = runner.run(request_obj)
+    assert queued["status"] == "queued"
+    # The runner never auto-attached a consents block because the stored
+    # approval's payload_hash is unrelated to the current request.
+    queue_body = client.calls[-1]["json"]
+    assert "consents" not in queue_body

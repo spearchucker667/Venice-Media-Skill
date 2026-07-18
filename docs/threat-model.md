@@ -407,11 +407,46 @@ If you discover a security vulnerability:
 
 ---
 
+## ⚠️ Known Limitations of the Current SSRF Protection
+
+The bridge follows a **permit-by-allow-list** strategy rather than IP pinning. The following gaps are mitigated *today* but each one is documented because it would block a stricter audit.
+
+### TOCTOU / DNS rebinding window
+
+`_enforce_safe_target()` performs a `_resolve_safely()` lookup and rejects private / loopback / link-local / reserved / metadata IPs. The hop then issues its HTTP request, and `httpx` re-resolves the hostname when it opens the socket. An attacker who can flip the answer between the safety check and connect can land on a different IP than the one that was validated.
+
+**What protects us today:** the host allow-list is narrow (`api.venice.ai` for authenticated calls; `cdn.venice.ai`, `venice.ai`, `storage.googleapis.com`, `r2.cloudflarestorage.com`, `media.venice.ai`, plus the `.venice.ai` operator suffix for downloads) and every redirect is re-validated against it.
+
+**What does not protect us today:** a published URL that resolves to attacker-controlled infrastructure outside the allow-list. Until IP pinning through a custom transport lands (open follow-up), the bridge trusts the allow-list to enumerate Venice's authoritative surface and trusts DNS to match the request URL to that surface.
+
+### No IP pinning
+
+The current `httpx.Client.stream("GET", current)` call connects by hostname. We do not pin the validated IP. A successful harness against the current code is straightforward: spin up a stub HTTP transport whose `handle_request` records the resolved IP and assert the bridge never re-resolves through it.
+
+### Authenticated-client proxy stance
+
+`VeniceClient.__init__` constructs the authenticated `httpx.Client` with the httpx defaults (which **do** honor `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`). The public-download path uses `httpx.Client(trust_env=False)`. The split is deliberate: a node already spokes for `api.venice.ai` through its user's proxy may be acceptable, but a signed media URL must never be coerced through a third party. Operators expecting strict proxy bypass on authenticated traffic should pass a custom `httpx.BaseTransport` that constructs `httpx.Client(transport=…, follow_redirects=False)` directly.
+
+### Content validation covers only the response head
+
+`fast_validate_content_type` validates the first ~4 KiB of the body. Bodies whose declared `Content-Type` is honest through the head but diverges later (e.g., a PNG header wrapped around an executable payload) are not currently block-streamed end-to-end. The `_MemorySink` / `_FileSink` plumbing makes full-body content re-validation a low-cost follow-up.
+
+### Cloud-host suffixes were intentionally narrowed
+
+Earlier drafts allowed `*.amazonaws.com`, `*.cloudflarestorage.com`, `*.googleapis.com` as download allow-list suffixes. These admit unrelated tenants and defeat SSRF contract review. The current `ALLOWED_HOST_SUFFIXES = (".venice.ai",)` reduces this surface to operator-only subdomains.
+
+### Uncensored content ≠ Seedance face-consent waiver
+
+`safe_mode=false` is an output-moderation knob returned to Venice at submit time. It is independent of the Seedance `409 needs_consent` legal attestation. A certificate of `safe_mode=false` does not authorize likeness generation; the explicit `attestations.seedance_face_consent=true` flag still requires the user to confirm the policy text returned in the 409 payload.
+
+---
+
 **Document Version History**
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-16 | Security Audit | Initial threat model based on comprehensive audit |
+| 1.1.0 | 2026-07-17 | Hardening sweep | Documented P0/P1 fixes (host separation, true streaming, resolver injection, in-memory vs file-mode defaults, typed `PublicHttpError`), added Known Limitations of the current SSRF protection, re-assessed VMS-005/007/008/013. |
 
 ---
 

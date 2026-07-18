@@ -46,9 +46,7 @@ class Settings:
         cache_dir = Path(env.get("VENICE_MEDIA_CACHE_DIR", user_cache_path(APP_NAME)))
         state_dir = Path(env.get("VENICE_MEDIA_STATE_DIR", user_state_path(APP_NAME)))
         config = _load_json_config(config_dir / "config.json")
-        base_url = str(env.get("VENICE_BASE_URL", config.get("base_url", DEFAULT_BASE_URL))).rstrip(
-            "/"
-        )
+        base_url = str(env.get("VENICE_BASE_URL", config.get("base_url", DEFAULT_BASE_URL))).rstrip("/")
         api_key = env.get("VENICE_API_KEY")
         output_dir = Path(
             env.get(
@@ -59,8 +57,7 @@ class Settings:
         timeout_seconds = float(env.get("VENICE_MEDIA_TIMEOUT", config.get("timeout_seconds", 120)))
         if require_api_key and not api_key:
             raise ConfigurationError(
-                "VENICE_API_KEY is not set. Export it in the host shell; "
-                "the bridge never stores API keys."
+                "VENICE_API_KEY is not set. Export it in the host shell; the bridge never stores API keys."
             )
         return cls(
             base_url=base_url,
@@ -92,11 +89,7 @@ def _load_json_config(path: Path) -> dict[str, Any]:
         raise ConfigurationError(f"Unable to read config file {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ConfigurationError(f"Config file {path} must contain a JSON object.")
-    forbidden = {"api_key", "token", "authorization", "venice_api_key"}.intersection(
-        key.lower() for key in payload
-    )
+    forbidden = {"api_key", "token", "authorization", "venice_api_key"}.intersection(key.lower() for key in payload)
     if forbidden:
-        raise ConfigurationError(
-            f"Config file {path} contains a credential-like field. Use VENICE_API_KEY instead."
-        )
+        raise ConfigurationError(f"Config file {path} contains a credential-like field. Use VENICE_API_KEY instead.")
     return payload

@@ -55,9 +55,7 @@ def install_skill(
         "host": host,
         "scope": scope,
         "skill_paths": installed,
-        "next_step": (
-            "Start a new host-agent session. For Kimi Code, invoke /skill:venice-media <request>."
-        ),
+        "next_step": ("Start a new host-agent session. For Kimi Code, invoke /skill:venice-media <request>."),
     }
 
 

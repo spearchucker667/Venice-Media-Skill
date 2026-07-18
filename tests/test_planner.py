@@ -14,13 +14,16 @@ class FakeCatalog:
     def list(self, _model_type: str, *, refresh: bool = False) -> list[dict[str, Any]]:
         return [self.model]
 
-    def get(
-        self, model_id: str | None, _model_type: str = "all", *, refresh: bool = False
-    ) -> dict[str, Any] | None:
+    def get(self, model_id: str | None, _model_type: str = "all", *, refresh: bool = False) -> dict[str, Any] | None:
         return self.model if model_id == self.model["id"] else None
 
 
 def model(model_id: str, constraints: dict[str, Any], **spec: Any) -> dict[str, Any]:
+    """Canonical model fixture: constraints live under ``model_spec.constraints``.
+
+    The planner also accepts the new shape where constraints sit directly on
+    ``model_spec``; both must keep working.
+    """
     return {"id": model_id, "model_spec": {"constraints": constraints, **spec}}
 
 
@@ -62,8 +65,30 @@ def test_image_plan_uses_model_constraints() -> None:
         "parameters.format",
     }.issubset(fields(result))
     assert "parameters.width_height" not in fields(result)
-    assert result["defaults"]["safe_mode"] is False
-    assert result["defaults"]["hide_watermark"] is True
+    # P1-10 default redaction: provider-default safe fields live under
+    # ``defaults.parameters``; execution policies live under
+    # ``defaults.execution``.
+    assert result["defaults"]["parameters"]["safe_mode"] is False
+    assert result["defaults"]["parameters"]["hide_watermark"] is True
+    assert result["defaults"]["execution"]["quote_first"] is True
+
+
+def test_image_plan_uses_direct_model_spec_constraints() -> None:
+    """The canonical Venice response embeds constraints directly on
+    ``model_spec`` rather than under a nested ``constraints`` field."""
+    catalog = FakeCatalog(
+        {
+            "id": "image-flat",
+            "model_spec": {
+                "aspectRatios": ["1:1", "16:9"],
+                "resolutions": ["1K"],
+            },
+        }
+    )
+    result = Planner(catalog).plan(  # type: ignore[arg-type]
+        "image.generate", model="image-flat", prompt="sunset"
+    )
+    assert {"parameters.aspect_ratio", "parameters.resolution"}.issubset(fields(result))
 
 
 def test_image_plan_falls_back_to_width_height() -> None:
@@ -72,23 +97,17 @@ def test_image_plan_falls_back_to_width_height() -> None:
         "image.generate", model="pixel-image", prompt="sunset"
     )
     width_question = next(
-        question
-        for question in result["questions"]
-        if question["field"] == "parameters.width_height"
+        question for question in result["questions"] if question["field"] == "parameters.width_height"
     )
     assert "16" in width_question["question"]
 
 
 def test_edit_upscale_and_background_plans() -> None:
-    edit_catalog = FakeCatalog(
-        model("edit-1", {"aspectRatios": ["auto", "1:1"], "resolutions": ["1K"]})
-    )
+    edit_catalog = FakeCatalog(model("edit-1", {"aspectRatios": ["auto", "1:1"], "resolutions": ["1K"]}))
     edit = Planner(edit_catalog).plan(  # type: ignore[arg-type]
         "image.edit", model="edit-1", prompt="remove tree"
     )
-    assert {"inputs.images", "parameters.aspect_ratio", "parameters.resolution"}.issubset(
-        fields(edit)
-    )
+    assert {"inputs.images", "parameters.aspect_ratio", "parameters.resolution"}.issubset(fields(edit))
 
     upscale = Planner(None).plan("image.upscale")
     assert {"inputs.image", "parameters.scale", "parameters.creativity"}.issubset(fields(upscale))
@@ -123,7 +142,7 @@ def test_video_plan_uses_duration_resolution_audio_and_image_input() -> None:
         "inputs.image",
         "parameters.negative_prompt",
     }.issubset(fields(result))
-    assert result["defaults"]["quote_first"] is True
+    assert result["defaults"]["execution"]["quote_first"] is True
 
 
 def test_tts_music_and_transcription_plans() -> None:
@@ -131,9 +150,7 @@ def test_tts_music_and_transcription_plans() -> None:
     tts = Planner(tts_catalog).plan(  # type: ignore[arg-type]
         "audio.tts", model="tts-1", prompt="hello"
     )
-    assert {"parameters.voice", "parameters.response_format", "parameters.speed"}.issubset(
-        fields(tts)
-    )
+    assert {"parameters.voice", "parameters.response_format", "parameters.speed"}.issubset(fields(tts))
 
     music_catalog = FakeCatalog(
         model(
@@ -148,11 +165,15 @@ def test_tts_music_and_transcription_plans() -> None:
     music = Planner(music_catalog).plan(  # type: ignore[arg-type]
         "audio.generate", model="music-1", prompt="ambient"
     )
+    # P1-04: ``lyrics_prompt`` (canonical) replaces ``lyrics``;
+    # ``instrumental`` replaces ``force_instrumental``.
     assert {
         "parameters.duration_seconds",
-        "parameters.force_instrumental",
-        "parameters.lyrics",
+        "parameters.instrumental",
+        "parameters.lyrics_prompt",
     }.issubset(fields(music))
+    assert "parameters.lyrics" not in fields(music)
+    assert "parameters.force_instrumental" not in fields(music)
 
     asr_catalog = FakeCatalog(model("asr-1", {}))
     asr = Planner(asr_catalog).plan(  # type: ignore[arg-type]

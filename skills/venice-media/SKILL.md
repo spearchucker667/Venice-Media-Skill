@@ -29,6 +29,12 @@ When `$request` is empty, use the current user message.
 7. Treat local media as sensitive. Do not upload unrelated files. Resolve explicit paths only.
 8. Keep stdout machine-readable by using the CLI's JSON output. Parse the result; do not guess success from process exit alone.
 
+### Known boundaries of the current protection
+
+- **`safe_mode=false` is not a waiver of Seedance consent.** Image-generation defaults set `safe_mode=false` for convenience. A Seedance `409 needs_consent` is an *independent* legal gate: surface the exact policy, obtain explicit confirmation, then attach the consent. The bridge never auto-resubmits and treats a `consent_required` outcome as terminal until approval lands.
+- **DNS rebinding is mitigated by the host allow-list, not by IP pinning.** The bridge validates the resolved IP against the operator allow-list before each request, but `httpx` re-resolves on connect. Until custom-transport IP pinning lands, do not assume a returned-media URL is "safe" beyond what the allow-list enumerates.
+- **Authenticated calls honor the process proxy** (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`); **public downloads do not** (`trust_env=False`). Trade-off the trade-off consciously — public-download safety is enforced by an explicit allow-list; authenticated calls are subject to whatever proxy the host user-agent configured.
+
 ## Environment check
 
 Run:

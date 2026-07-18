@@ -1,39 +1,57 @@
-"""Operation dispatcher for request manifests."""
+"""Operation dispatcher for request manifests.
+
+Each public method on :class:`MediaRunner` accepts a
+:class:`~venice_media_skill.request.MediaRequest` and returns a structured
+JSON-safe dict. All provider bodies are constructed via
+:mod:`venice_media_skill.payloads` so quote, queue, consent, and
+retrieve responses are bound to the exact same canonical payload hash.
+"""
 
 from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from . import payloads
 from .client import ApiResponse, VeniceClient
-from .errors import OutputError, RequestValidationError
+from .consent import (
+    ConsentStore,
+    QuoteApprovalStore,
+    build_consent_object,
+    ensure_seedance_fact,
+    quote_cost,
+)
+from .errors import (
+    ConsentApprovalMissing,
+    ConsentRequired,
+    OutputError,
+    QuoteApprovalMismatch,
+    QuoteApprovalRequired,
+    RequestValidationError,
+)
 from .jobs import JobStore
-from .output import ArtifactWriter, _validate_safe_filename
+from .output import ArtifactWriter
 from .request import MediaRequest
-from .util import normalize_media_input, redact_data, timestamp_slug, utc_now_iso
+from .util import (
+    redact_data,
+    timestamp_slug,
+    utc_now_iso,
+)
 
-# VMS-017 FIX: Endpoint-specific media size limits (in bytes)
-# Based on Venice API documentation and best practices
 ENDPOINT_SIZE_LIMITS: dict[str, int] = {
-    "image.edit": 25 * 1024 * 1024,  # 25 MiB for image edit
-    "image.multi_edit": 25 * 1024 * 1024,  # 25 MiB for multi-edit
-    "image.background_remove": 25 * 1024 * 1024,  # 25 MiB for background removal
-    "audio.transcribe": 15 * 1024 * 1024,  # 15 MiB for audio transcription
-    "video.generate": 500 * 1024 * 1024,  # 500 MiB for video generation
-    "audio.generate": 500 * 1024 * 1024,  # 500 MiB for audio generation
-    # Default for other operations
+    "image.edit": 25 * 1024 * 1024,
+    "image.multi_edit": 25 * 1024 * 1024,
+    "image.background_remove": 25 * 1024 * 1024,
+    "audio.transcribe": 15 * 1024 * 1024,
+    "video.generate": 500 * 1024 * 1024,
+    "audio.generate": 500 * 1024 * 1024,
     "default": 50 * 1024 * 1024,
 }
 
-
-def _get_size_limit(operation: str) -> int:
-    """Get the size limit for a specific operation.
-
-    VMS-017 FIX: Return endpoint-specific size limits.
-    """
-    return ENDPOINT_SIZE_LIMITS.get(operation, ENDPOINT_SIZE_LIMITS["default"])
+QUOTE_REQUIRED_OPERATIONS = frozenset({"video.generate", "audio.generate"})
 
 
 class MediaRunner:
@@ -43,225 +61,210 @@ class MediaRunner:
         client: VeniceClient,
         writer: ArtifactWriter,
         jobs: JobStore,
+        consent_store: ConsentStore | None = None,
+        quote_store: QuoteApprovalStore | None = None,
     ) -> None:
         self.client = client
         self.writer = writer
         self.jobs = jobs
+        self.consent_store = consent_store
+        self.quote_store = quote_store
+
+    # -- entry points -------------------------------------------------------
 
     def run(self, request: MediaRequest) -> dict[str, Any]:
         operation = request.operation
-        if operation == "image.generate":
-            return self._image_generate(request)
-        if operation == "image.edit":
-            return self._image_edit(request)
-        if operation == "image.multi_edit":
-            return self._image_multi_edit(request)
-        if operation == "image.upscale":
-            return self._image_upscale(request)
-        if operation == "image.background_remove":
-            return self._image_background_remove(request)
-        if operation == "video.generate":
-            return self._queued_generate(request, media_type="video")
-        if operation == "video.retrieve":
-            return self._retrieve_existing(request, media_type="video")
-        if operation == "audio.tts":
-            return self._tts(request)
-        if operation == "audio.generate":
-            return self._queued_generate(request, media_type="audio")
-        if operation == "audio.retrieve":
-            return self._retrieve_existing(request, media_type="audio")
-        if operation == "audio.transcribe":
-            return self._transcribe(request)
+        try:
+            if operation == "image.generate":
+                return self._image_generate(request)
+            if operation == "image.edit":
+                return self._image_edit(request)
+            if operation == "image.multi_edit":
+                return self._image_multi_edit(request)
+            if operation == "image.upscale":
+                return self._image_upscale(request)
+            if operation == "image.background_remove":
+                return self._image_background_remove(request)
+            if operation == "video.generate":
+                return self._video_generate(request)
+            if operation == "video.retrieve":
+                return self._retrieve_existing(request, media_type="video")
+            if operation == "audio.tts":
+                return self._tts(request)
+            if operation == "audio.generate":
+                return self._audio_generate(request)
+            if operation == "audio.retrieve":
+                return self._retrieve_existing(request, media_type="audio")
+            if operation == "audio.transcribe":
+                return self._transcribe(request)
+        except ValueError as exc:
+            raise RequestValidationError(str(exc)) from exc
         raise RequestValidationError(f"Unsupported operation: {operation}")
 
+    # -- synchronous image ops ---------------------------------------------
+
     def _image_generate(self, request: MediaRequest) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        payload = {
-            "model": request.model,
-            "prompt": request.prompt,
-            "safe_mode": False,
-            "hide_watermark": True,
-            "format": "webp",
-            "variants": 1,
-            **request.parameters,
-        }
-        # VMS-011 FIX: Don't forcibly overwrite return_binary if user explicitly set it
-        # Only set default if not explicitly provided by user
-        if "return_binary" not in request.parameters:
-            variants = int(payload.get("variants", 1))
-            payload["return_binary"] = variants == 1
+        canonical = payloads.build_image_generate(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/image/generate", payload)
-        response = self.client.request("POST", "/image/generate", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
+        if maybe_consent:
+            return maybe_consent
+        return self._save(request, response, canonical=canonical)
 
     def _image_edit(self, request: MediaRequest) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        raw_image = request.inputs.get("image")
-        if raw_image is None:
-            images = request.inputs.get("images")
-            raw_image = images[0] if isinstance(images, list) and images else None
-        if not isinstance(raw_image, str):
-            raise RequestValidationError("image.edit requires a string inputs.image.")
-        # VMS-003 FIX: Use modelId instead of model for /image/edit endpoint
-        # API documentation shows modelId as the formal field, model as deprecated alias
-        # VMS-017 FIX: Use endpoint-specific size limit
-        size_limit = _get_size_limit(request.operation)
-        payload = {
-            "modelId": request.model,
-            "prompt": request.prompt,
-            "image": normalize_media_input(raw_image, max_bytes=size_limit),
-            "safe_mode": False,
-            "output_format": "png",
-            **request.parameters,
-        }
+        canonical = payloads.build_image_edit(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/image/edit", payload)
-        response = self.client.request("POST", "/image/edit", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
+        if maybe_consent:
+            return maybe_consent
+        return self._save(request, response, canonical=canonical)
 
     def _image_multi_edit(self, request: MediaRequest) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        images = request.inputs.get("images")
-        if not isinstance(images, list) or not all(isinstance(item, str) for item in images):
-            raise RequestValidationError(
-                "image.multi_edit requires string values in inputs.images."
-            )
-        # VMS-017 FIX: Use endpoint-specific size limit
-        size_limit = _get_size_limit(request.operation)
-        payload = {
-            "modelId": request.model,
-            "prompt": request.prompt,
-            "images": [normalize_media_input(item, max_bytes=size_limit) for item in images],
-            "safe_mode": False,
-            "output_format": "png",
-            **request.parameters,
-        }
+        canonical = payloads.build_image_multi_edit(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/image/multi-edit", payload)
-        response = self.client.request("POST", "/image/multi-edit", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
+        if maybe_consent:
+            return maybe_consent
+        return self._save(request, response, canonical=canonical)
 
     def _image_upscale(self, request: MediaRequest) -> dict[str, Any]:
-        image = request.inputs.get("image")
-        if not isinstance(image, str):
-            raise RequestValidationError("image.upscale requires a string inputs.image.")
-        # VMS-004 FIX: Use API-aligned parameter names
-        # API expects: scale, enhance, enhanceCreativity, enhancePrompt
-        # Not: creativity (undocumented)
-        # VMS-017 FIX: Use endpoint-specific size limit
-        size_limit = _get_size_limit(request.operation)
-        payload = {
-            "image": normalize_media_input(image, max_bytes=size_limit),
-            "scale": 2,
-            "enhance": False,
-            **request.parameters,
-        }
-        # Handle legacy creativity parameter by mapping to enhanceCreativity
-        if "creativity" in request.parameters:
-            payload["enhance"] = True
-            payload["enhanceCreativity"] = request.parameters["creativity"]
-            payload.pop("creativity", None)
+        canonical = payloads.build_image_upscale(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/image/upscale", payload)
-        response = self.client.request("POST", "/image/upscale", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        return self._save(request, response, canonical=canonical)
 
     def _image_background_remove(self, request: MediaRequest) -> dict[str, Any]:
-        image = request.inputs.get("image")
-        if not isinstance(image, str):
-            raise RequestValidationError("image.background_remove requires a string inputs.image.")
-        # VMS-017 FIX: Use endpoint-specific size limit
-        size_limit = _get_size_limit(request.operation)
-        normalized = normalize_media_input(image, max_bytes=size_limit)
-        payload = (
-            {"image_url": normalized}
-            if normalized.startswith(("http://", "https://"))
-            else {"image": normalized}
-        )
-        payload.update(request.parameters)
+        canonical = payloads.build_image_background_remove(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/image/background-remove", payload)
-        response = self.client.request("POST", "/image/background-remove", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        return self._save(request, response, canonical=canonical)
 
     def _tts(self, request: MediaRequest) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        payload = {
-            "model": request.model,
-            "input": request.prompt,
-            "response_format": "mp3",
-            "speed": 1.0,
-            "streaming": False,
-            **request.parameters,
-        }
+        canonical = payloads.build_tts(request)
         if request.execution.dry_run:
-            return self._dry_run(request, "/audio/speech", payload)
-        response = self.client.request("POST", "/audio/speech", json_body=payload)
-        return self._save(request, response, api_request=payload)
+            return self._dry_run(request, canonical, include_inputs=False)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        return self._save(request, response, canonical=canonical)
+
+    # -- transcription ------------------------------------------------------
 
     def _transcribe(self, request: MediaRequest) -> dict[str, Any]:
-        assert request.model is not None
+        canonical = payloads.build_transcribe(request)
         audio = request.inputs.get("audio")
         if not isinstance(audio, str):
             raise RequestValidationError("audio.transcribe requires a local path in inputs.audio.")
         path = Path(audio).expanduser().resolve()
         if not path.is_file():
             raise RequestValidationError(f"Audio file does not exist: {path}")
-        data = {
-            "model": request.model,
-            "response_format": str(request.parameters.get("response_format", "json")),
-            "timestamps": str(bool(request.parameters.get("timestamps", False))).lower(),
-        }
-        if request.parameters.get("language"):
-            data["language"] = str(request.parameters["language"])
+        size_limit = ENDPOINT_SIZE_LIMITS["audio.transcribe"]
+        actual_size = path.stat().st_size
+        if actual_size > size_limit:
+            raise RequestValidationError(
+                f"audio.transcribe input is {actual_size} bytes; endpoint limit is {size_limit} bytes: {path}"
+            )
+        data = dict(canonical.payload)
         if request.execution.dry_run:
             return {
                 "status": "dry_run",
                 "operation": request.operation,
-                "endpoint": "/audio/transcriptions",
+                "endpoint": canonical.endpoint,
                 "multipart": {"file": str(path), **data},
             }
         with path.open("rb") as handle:
             response = self.client.request(
                 "POST",
-                "/audio/transcriptions",
+                canonical.endpoint,
                 files={"file": (path.name, handle, "application/octet-stream")},
                 data=data,
             )
-        return self._save_transcript(request, response, api_request={"file": str(path), **data})
+        metadata_raw: dict[str, Any] = {
+            "file": str(path),
+            **{str(key): value for key, value in data.items()},
+        }
+        metadata_payload = redact_data(metadata_raw)
+        metadata_mapping: dict[str, Any] = metadata_payload if isinstance(metadata_payload, dict) else metadata_raw
+        return self._save_transcript(request, response, api_request=metadata_mapping)
+
+    # -- paid queued ops ----------------------------------------------------
+
+    def _video_generate(self, request: MediaRequest) -> dict[str, Any]:
+        return self._queued_generate(request, media_type="video")
+
+    def _audio_generate(self, request: MediaRequest) -> dict[str, Any]:
+        return self._queued_generate(request, media_type="audio")
 
     def _queued_generate(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        payload = self._queue_payload(request, media_type=media_type)
+        if media_type == "video":
+            queue_canonical = payloads.build_video_queue(request)
+            quote_canonical = payloads.build_video_quote(request)
+        else:
+            queue_canonical = payloads.build_audio_queue(request)
+            quote_canonical = payloads.build_audio_quote(request)
+
+        # Quoting is the default for paid queued operations; the host agent
+        # can opt out with execution.skip_quote (preferred) or by setting
+        # legacy ``execution.quote_first: false``, but never silently.
+        skip_quote = bool(
+            getattr(request.execution, "skip_quote", False) or not bool(getattr(request.execution, "quote_first", True))
+        )
+        requires_quote = request.operation in QUOTE_REQUIRED_OPERATIONS
+        do_quote = requires_quote and not skip_quote
+
         if request.execution.dry_run:
-            return self._dry_run(request, f"/{media_type}/queue", payload)
-        if request.execution.quote_first:
-            quote_payload = self._quote_payload(request, media_type=media_type)
-            quote_response = self.client.request(
-                "POST", f"/{media_type}/quote", json_body=quote_payload
+            return self._dry_run(request, queue_canonical, include_inputs=media_type == "video")
+
+        if quote_canonical.hash != queue_canonical.hash:
+            raise OutputError("Internal error: quote/queue hashes diverged; refusing to submit a paid request.")
+
+        # Submit exactly one quote request and exactly one queue request.
+        # The runner never silently retries paid submissions.
+        quote_response: dict[str, Any] = {}
+        if do_quote:
+            quote_api = self.client.request("POST", quote_canonical.endpoint, json_body=dict(quote_canonical.payload))
+            if isinstance(quote_api.json_data, Mapping):
+                quote_response = dict(quote_api.json_data)
+            else:
+                raise OutputError(f"{quote_canonical.endpoint} returned an unexpected response.")
+
+        # Quote approval gate. Without an approval that binds the canonical
+        # payload hash, we surface an explicit "next_step" to the host agent
+        # rather than queueing.
+        if do_quote:
+            self._require_quote_approval(
+                request=request,
+                canonical=queue_canonical,
+                quote_response=quote_response,
             )
-            if not request.execution.confirmed_cost:
-                return {
-                    "status": "approval_required",
-                    "operation": request.operation,
-                    "quote": quote_response.json_data,
-                    "quote_request": redact_data(quote_payload),
-                    "next_step": (
-                        "Show the quote to the user. After explicit approval, set "
-                        "execution.confirmed_cost=true and run the same manifest again."
-                    ),
-                }
-        queued = self.client.request("POST", f"/{media_type}/queue", json_body=payload)
+
+        # Seedance consent gate. We only attach consents when a stored
+        # approval matches the canonical queue payload hash.
+        consent_block = self._consume_consent_approval(
+            request=request,
+            canonical=queue_canonical,
+        )
+
+        queue_body = dict(queue_canonical.payload)
+        if consent_block is not None:
+            payloads.append_consents(consent_block, queue_body)
+
+        queued = self.client.request("POST", queue_canonical.endpoint, json_body=queue_body)
         if not isinstance(queued.json_data, dict):
-            raise OutputError(f"/{media_type}/queue returned an unexpected response.")
+            raise OutputError(f"{queue_canonical.endpoint} returned an unexpected response.")
         queue_id = queued.json_data.get("queue_id")
         if not isinstance(queue_id, str) or not queue_id:
-            raise OutputError(f"/{media_type}/queue response did not include queue_id.")
+            raise OutputError(f"{queue_canonical.endpoint} response did not include queue_id.")
         download_url = queued.json_data.get("download_url")
         self.jobs.create(
             media_type=media_type,
-            model=request.model,
+            model=request.model or "",
             queue_id=queue_id,
             request=request.to_dict(),
         )
@@ -279,35 +282,35 @@ class MediaRunner:
         return self._poll_and_save(
             request,
             media_type=media_type,
-            model=request.model,
+            model=request.model or "",
             queue_id=queue_id,
             download_url=download_url if isinstance(download_url, str) else None,
         )
 
     def _retrieve_existing(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
-        queue_id = request.parameters.get("queue_id")
-        assert isinstance(queue_id, str)
-
-        # SECURITY: Reject user-supplied download_url to prevent SSRF
-        # download_url should only come from provider responses, not manifests
         if request.parameters.get("download_url"):
             raise RequestValidationError(
-                "download_url must not be supplied in manifest. "
-                "URLs are obtained from Venice API responses only."
+                "download_url must not be supplied in manifest; URLs are obtained from Venice API responses only."
             )
+        if "queue_id" in request.parameters:
+            queue_id = request.parameters["queue_id"]
+            if not isinstance(queue_id, str) or not queue_id:
+                raise RequestValidationError(f"{request.operation} requires a string parameters.queue_id.")
+        else:
+            queue_id_value = request.inputs.get("queue_id") if isinstance(request.inputs, Mapping) else None
+            if not isinstance(queue_id_value, str) or not queue_id_value:
+                raise RequestValidationError(f"{request.operation} requires parameters.queue_id or inputs.queue_id.")
+            queue_id = queue_id_value
 
-        # VMS-018 FIX: Infer model from job store if not provided in manifest
-        # This allows retrieval without requiring user to resupply the model
         model = request.model
-        download_url = None
+        download_url: str | None = None
         try:
             record = self.jobs.get(queue_id)
         except OutputError as exc:
-            # Create new job record if not found
             if model is None:
                 raise RequestValidationError(
-                    "model is required when creating a new job record. "
-                    "Either provide model in manifest or use an existing queue_id."
+                    "model is required when creating a brand-new job record. "
+                    "Either supply model in the manifest, or use a queue_id from a previous run."
                 ) from exc
             self.jobs.create(
                 media_type=media_type,
@@ -316,30 +319,30 @@ class MediaRunner:
                 request=request.to_dict(),
             )
         else:
-            # Infer model from job store if not provided
             if model is None:
                 model = record.get("model")
                 if model is None:
                     raise RequestValidationError(
-                        "model is required. Either provide model in manifest "
+                        "model is required. Either provide model in the manifest "
                         "or ensure the job record contains a model."
                     )
-            # Validate that provided model matches job store model
             if model != record.get("model"):
                 raise RequestValidationError(
-                    f"Provided model '{model}' does not match job store model "
-                    f"'{record.get('model')}'. Use the correct model or omit it."
+                    f"Provided model {model!r} does not match job-store model "
+                    f"{record.get('model')!r}; pick a queue_id from the matching run."
                 )
-            saved_url = record.get("download_url")
-            download_url = saved_url if isinstance(saved_url, str) else None
+            saved = record.get("download_url")
+            download_url = saved if isinstance(saved, str) else None
 
         return self._poll_and_save(
             request,
             media_type=media_type,
-            model=model,
+            model=model or "",
             queue_id=queue_id,
             download_url=download_url,
         )
+
+    # -- polling and saving -------------------------------------------------
 
     def _poll_and_save(
         self,
@@ -357,61 +360,35 @@ class MediaRunner:
             "delete_media_on_completion": False,
         }
         while True:
-            response = self.client.request(
-                "POST", f"/{media_type}/retrieve", json_body=retrieve_payload
-            )
+            response = self.client.request("POST", f"/{media_type}/retrieve", json_body=retrieve_payload)
             if response.is_binary:
-                result = self._save(
-                    request, response, api_request=retrieve_payload, queue_id=queue_id
-                )
+                result = self._save_binary(request, response, queue_id=queue_id, api_request=retrieve_payload)
                 self.jobs.update(queue_id, status="completed", artifact=result.get("artifacts"))
                 self._complete_if_requested(request, media_type, model, queue_id)
                 return result
             status_payload = response.json_data
             self.jobs.update(queue_id, status="processing", last_response=status_payload)
-            status = (
-                str(status_payload.get("status", "")).upper()
-                if isinstance(status_payload, dict)
-                else ""
-            )
+            status = str(status_payload.get("status", "")).upper() if isinstance(status_payload, dict) else ""
             if status == "COMPLETED":
-                # VMS-006 FIX: Check for download_url in current response, not just original
-                # Provider may return URL only at completion or rotate URLs
-                current_download_url = download_url
-                if isinstance(status_payload, dict):
-                    # Check various possible URL fields in the response
-                    for url_field in ("download_url", "url"):
-                        if isinstance(status_payload.get(url_field), str):
-                            current_download_url = status_payload[url_field]
-                            break
-                    # Also check nested structures
-                    if not current_download_url:
-                        data = status_payload.get("data")
-                        if isinstance(data, dict):
-                            for url_field in ("download_url", "url"):
-                                if isinstance(data.get(url_field), str):
-                                    current_download_url = data[url_field]
-                                    break
-                if current_download_url:
-                    # Update job store with new URL
-                    if current_download_url != download_url:
-                        self.jobs.update(queue_id, download_url=current_download_url)
-                    downloaded = self.client.download_public_url(current_download_url)
-                    result = self._save(
-                        request,
-                        downloaded,
-                        api_request=retrieve_payload,
-                        queue_id=queue_id,
+                current_download_url = self._fresh_download_url(status_payload, fallback=download_url)
+                if current_download_url is None:
+                    self.jobs.update(queue_id, status="completed_without_media")
+                    raise OutputError(
+                        "The queue reported COMPLETED but returned neither binary media nor a "
+                        "download_url. Preserve the queue ID and inspect the provider response."
                     )
-                    self.jobs.update(queue_id, status="completed", artifact=result.get("artifacts"))
-                    self._complete_if_requested(request, media_type, model, queue_id)
-                    return result
-                # No download URL available
-                self.jobs.update(queue_id, status="completed_without_media")
-                raise OutputError(
-                    "The queue reported COMPLETED but returned neither binary media nor a "
-                    "download_url. Preserve the queue ID and inspect the provider response."
+                if current_download_url != download_url:
+                    self.jobs.update(queue_id, download_url=current_download_url)
+                downloaded = self.client.download_public_url(current_download_url)
+                result = self._save_binary(
+                    request,
+                    downloaded,
+                    queue_id=queue_id,
+                    api_request=retrieve_payload,
                 )
+                self.jobs.update(queue_id, status="completed", artifact=result.get("artifacts"))
+                self._complete_if_requested(request, media_type, model, queue_id)
+                return result
             if status in {"FAILED", "ERROR", "CANCELLED", "CANCELED"}:
                 self.jobs.update(queue_id, status=status.lower(), last_response=status_payload)
                 return {
@@ -439,9 +416,22 @@ class MediaRunner:
                 }
             time.sleep(request.execution.poll_interval_seconds)
 
-    def _complete_if_requested(
-        self, request: MediaRequest, media_type: str, model: str, queue_id: str
-    ) -> None:
+    @staticmethod
+    def _fresh_download_url(payload: Any, *, fallback: str | None) -> str | None:
+        candidates: list[Mapping[str, Any]] = []
+        if isinstance(payload, Mapping):
+            candidates.append(payload)
+            data = payload.get("data")
+            if isinstance(data, Mapping):
+                candidates.append(data)
+        for source in candidates:
+            for key in ("download_url", "url"):
+                value = source.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return fallback
+
+    def _complete_if_requested(self, request: MediaRequest, media_type: str, model: str, queue_id: str) -> None:
         if request.execution.delete_remote_on_completion:
             self.client.request(
                 "POST",
@@ -450,85 +440,29 @@ class MediaRunner:
             )
             self.jobs.update(queue_id, remote_media_deleted=True)
 
-    def _queue_payload(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
-        assert request.model is not None and request.prompt is not None
-        payload: dict[str, Any] = {
-            "model": request.model,
-            "prompt": request.prompt,
-            **request.parameters,
-        }
-        payload.pop("queue_id", None)
-        payload.pop("download_url", None)
-        if media_type == "video":
-            mapping = {
-                "image": "image_url",
-                "end_image": "end_image_url",
-                "audio": "audio_url",
-                "video": "video_url",
-            }
-            for source, target in mapping.items():
-                value = request.inputs.get(source)
-                if isinstance(value, str):
-                    payload[target] = normalize_media_input(value)
-            list_mapping = {
-                "reference_images": "reference_image_urls",
-                "reference_videos": "reference_video_urls",
-                "reference_audios": "reference_audio_urls",
-                "scene_images": "scene_image_urls",
-            }
-            for source, target in list_mapping.items():
-                values = request.inputs.get(source)
-                if isinstance(values, list) and all(isinstance(item, str) for item in values):
-                    payload[target] = [normalize_media_input(item) for item in values]
-            if request.inputs.get("elements") is not None:
-                payload["elements"] = request.inputs["elements"]
-            # VMS-005 FIX: Remove automatic consent pre-population
-            # Consent must be obtained through proper challenge-response flow
-            # The manifest boolean seedance_face_consent is NOT sufficient for consent
-            # Instead, the ConsentRequired exception will be raised by the client
-            # when the API returns 409 needs_consent, and the user must explicitly
-            # approve the exact policy text before resubmitting
-            #
-            # This prevents bypassing provider consent requirements with a simple boolean.
-            # The proper flow is:
-            # 1. Submit without consent -> get 409 with policy_text
-            # 2. Show policy_text to user, get explicit confirmation
-            # 3. Resubmit same request with consents.seedance object
-            #
-            # We intentionally do NOT automatically add consent here.
-        return payload
-
-    def _quote_payload(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
-        assert request.model is not None
-        if media_type == "video":
-            allowed = {
-                "duration",
-                "aspect_ratio",
-                "resolution",
-                "upscale_factor",
-                "audio",
-                "reference_video_total_duration",
-            }
-            payload = {"model": request.model}
-            payload.update(
-                {key: value for key, value in request.parameters.items() if key in allowed}
-            )
-            video = request.inputs.get("video")
-            if isinstance(video, str):
-                payload["video_url"] = normalize_media_input(video)
-            return payload
-        allowed = {"duration_seconds", "character_count"}
-        payload = {"model": request.model}
-        payload.update({key: value for key, value in request.parameters.items() if key in allowed})
-        return payload
+    # -- responses ----------------------------------------------------------
 
     def _save(
         self,
         request: MediaRequest,
         response: ApiResponse,
         *,
-        api_request: dict[str, Any],
-        queue_id: str | None = None,
+        canonical: payloads.CanonicalPayload,
+    ) -> dict[str, Any]:
+        return self._save_binary_with_canonical(
+            request,
+            response,
+            canonical=canonical,
+            api_request=canonical.payload,
+        )
+
+    def _save_binary(
+        self,
+        request: MediaRequest,
+        response: ApiResponse,
+        *,
+        queue_id: str | None,
+        api_request: Mapping[str, Any],
     ) -> dict[str, Any]:
         artifacts = self.writer.save_response(
             response,
@@ -541,7 +475,8 @@ class MediaRunner:
                 "model": request.model,
                 "prompt": request.prompt,
                 "queue_id": queue_id,
-                "api_request": redact_data(api_request),
+                "api_request": redact_data(dict(api_request)),
+                "payload_hash": _hash_or_none(api_request),
             },
         )
         return {
@@ -552,90 +487,354 @@ class MediaRunner:
             "artifacts": artifacts,
         }
 
+    def _save_binary_with_canonical(
+        self,
+        request: MediaRequest,
+        response: ApiResponse,
+        *,
+        canonical: payloads.CanonicalPayload,
+        api_request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        artifacts = self.writer.save_response(
+            response,
+            operation=request.operation,
+            output_dir=request.output.directory,
+            filename=request.output.filename,
+            overwrite=request.output.overwrite,
+            write_metadata=request.output.write_metadata,
+            metadata={
+                "model": request.model,
+                "prompt": request.prompt,
+                "queue_id": None,
+                "api_request": redact_data(_sanitize_api_request(canonical.operation, api_request)),
+                "payload_hash": canonical.hash,
+                "endpoint": canonical.endpoint,
+                "redacted_at": utc_now_iso(),
+            },
+        )
+        return {
+            "status": "completed",
+            "operation": request.operation,
+            "model": request.model,
+            "queue_id": None,
+            "artifacts": artifacts,
+        }
+
     def _save_transcript(
         self,
         request: MediaRequest,
         response: ApiResponse,
         *,
-        api_request: dict[str, Any],
+        api_request: Mapping[str, Any],
     ) -> dict[str, Any]:
         directory = (
-            Path(request.output.directory).expanduser()
-            if request.output.directory
-            else self.writer.default_output_dir
+            Path(request.output.directory).expanduser() if request.output.directory else self.writer.default_output_dir
         )
+        directory = directory.resolve()
         directory.mkdir(parents=True, exist_ok=True)
 
-        # NEW: Validate filename safety for transcript output
         extension = ".json" if response.json_data is not None else ".txt"
         filename = request.output.filename or f"audio-transcript-{timestamp_slug()}{extension}"
-
         if request.output.filename:
+            from .output import _validate_safe_filename  # local import
+
             _validate_safe_filename(request.output.filename)
 
-        # Resolve directory to absolute path
-        directory = directory.resolve()
+        candidate = directory / filename
+        resolved = candidate.resolve()
+        if not resolved.parent.samefile(directory):
+            raise OutputError(f"output.filename resolves to {resolved} which is outside {directory}")
+        if resolved.exists() and not request.output.overwrite:
+            resolved = resolved.with_name(f"{resolved.stem}-{timestamp_slug()}{resolved.suffix}")
 
-        # Construct path and validate containment
-        path = directory / filename
-        resolved_path = path.resolve()
-        if not resolved_path.parent.samefile(directory):
-            raise OutputError(
-                f"output.filename resolves to {resolved_path} which is outside "
-                f"the output directory {directory}"
-            )
-        path = resolved_path
+        from .output import _atomic_write_bytes, _atomic_write_text  # local
 
-        if path.exists() and not request.output.overwrite:
-            path = directory / f"{path.stem}-{timestamp_slug()}{path.suffix}"
-        if response.json_data is not None:
-            path.write_text(
-                json.dumps(response.json_data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+        if response.json_data is not None and response.json_data != [] and response.json_data != {}:
+            text = json.dumps(response.json_data, indent=2, ensure_ascii=False) + "\n"
+            _atomic_write_text(resolved, text)
         elif response.content is not None:
-            path.write_bytes(response.content)
+            _atomic_write_bytes(resolved, response.content)
         else:
             raise OutputError("Transcription response was empty.")
         artifact = {
-            "path": str(path.resolve()),
+            "path": str(resolved),
             "content_type": response.content_type,
-            "bytes": path.stat().st_size,
+            "bytes": resolved.stat().st_size,
         }
         if request.output.write_metadata:
-            sidecar = path.with_suffix(path.suffix + ".metadata.json")
-            sidecar.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "created_at": utc_now_iso(),
-                        "operation": request.operation,
-                        "model": request.model,
-                        "api_request": redact_data(api_request),
-                        "artifact": artifact,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            sidecar = resolved.with_suffix(resolved.suffix + ".metadata.json")
+            sidecar_payload = {
+                "schema_version": 1,
+                "created_at": utc_now_iso(),
+                "operation": request.operation,
+                "model": request.model,
+                "api_request": redact_data(dict(api_request)),
+                "artifact": artifact,
+            }
+            _atomic_write_text(sidecar, json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n")
             artifact["metadata_path"] = str(sidecar.resolve())
         return {"status": "completed", "operation": request.operation, "artifacts": [artifact]}
 
-    @staticmethod
-    def _dry_run(request: MediaRequest, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "status": "dry_run",
-            "operation": request.operation,
-            "endpoint": endpoint,
-            "api_request": redact_data(payload),
-        }
+    # -- dry run + helpers --------------------------------------------------
 
     @staticmethod
-    def _retrieve_command(media_type: str, model: str, queue_id: str) -> str:
+    def _dry_run(
+        request: MediaRequest,
+        canonical: payloads.CanonicalPayload,
+        *,
+        include_inputs: bool = True,
+    ) -> dict[str, Any]:
+        safe_payload = _sanitize_api_request(canonical.operation, canonical.payload)
+        out: dict[str, Any] = {
+            "status": "dry_run",
+            "operation": request.operation,
+            "endpoint": canonical.endpoint,
+            "payload_hash": canonical.hash,
+            "input_hashes": list(canonical.input_hashes),
+            "api_request": redact_data(safe_payload),
+        }
+        if include_inputs:
+            out["input_summary"] = _summarize_inputs(request)
+        return out
+
+    @staticmethod
+    def _retrieve_command(media_type: str, model: str | None, queue_id: str) -> str:
         operation = f"{media_type}.retrieve"
         return (
             "Create a manifest with operation="
-            f"{operation!r}, model={model!r}, parameters.queue_id={queue_id!r}, then run it."
+            f"{operation!r}, model={model!r}, "
+            f"parameters.queue_id={queue_id!r}, then run it."
         )
+
+    # -- consent + quote gates ----------------------------------------------
+
+    def _record_consent_if_needed(
+        self,
+        canonical: payloads.CanonicalPayload,
+        response: ApiResponse,
+        *,
+        media_kind: str,
+    ) -> dict[str, Any] | None:
+        if response.status_code != 409 or not isinstance(response.json_data, Mapping):
+            return None
+        if not ensure_seedance_fact(response.json_data):
+            return None
+        if self.consent_store is None:
+            raise ConsentRequired(payload=dict(response.json_data))
+        challenge = self.consent_store.record_challenge(
+            operation=canonical.operation,
+            model=_redact_model_for_storage(canonical.payload),
+            payload_hash=canonical.hash,
+            input_hashes=canonical.input_hashes,
+            provider_payload=response.json_data,
+        )
+        return {
+            "status": "consent_required",
+            "operation": canonical.operation,
+            "media_kind": media_kind,
+            "challenge_id": challenge.challenge_id,
+            "consent_flow": challenge.consent_flow,
+            "consent_version": challenge.consent_version,
+            "policy_text": challenge.policy_text,
+            "face_media_roles": list(challenge.face_media_roles),
+            "docs_url": challenge.docs_url,
+            "payload_hash": challenge.payload_hash,
+            "input_hashes": list(challenge.input_hashes),
+            "expires_at": challenge.expires_at,
+            "next_step": (
+                "Run "
+                f"`venice-media approve-consent {challenge.challenge_id} "
+                "--acknowledge-policy --max-cost <USD>`. "
+                "The command will only persist an approval if the user has read the policy text."
+            ),
+        }
+
+    def _consume_consent_approval(
+        self,
+        *,
+        request: MediaRequest,
+        canonical: payloads.CanonicalPayload,
+    ) -> dict[str, Any] | None:
+        """Return a consent block only when an approval exists for ``canonical.hash``.
+
+        Any attempt to inject ``parameters.consents`` (or any other reserved
+        field) is rejected at manifest validation; here we only compose the
+        on-wire consent block from a stored approval record that matched the
+        exact canonical payload hash.
+        """
+        if self.consent_store is None:
+            return None
+        approval = self.consent_store.approval_for(canonical.hash)
+        if approval is None:
+            return None
+        # ``consent_version`` is read from the provider's policy challenge
+        # captured alongside the approval; the CLI is responsible for
+        # supplying it via the stored challenge, so we borrow the same value
+        # when present on the canonical record.
+        challenge = self.consent_store.load_challenge(approval.challenge_id)
+        version = challenge.consent_version if challenge is not None and challenge.consent_version else ""
+        block = build_consent_object(policy_version=version)
+        if version:
+            block["consent_version"] = version
+        # Explicitly tie this consent block back to the approval ID for
+        # forensic auditing; the provider does not echo this field.
+        block["_bridge_approval"] = approval.challenge_id
+        return block
+
+    def _require_quote_approval(
+        self,
+        *,
+        request: MediaRequest,
+        canonical: payloads.CanonicalPayload,
+        quote_response: Mapping[str, Any],
+    ) -> None:
+        """Enforce policy: paid queue submissions require a hash-bound approval."""
+        cost = quote_cost(quote_response)
+        if cost is None:
+            raise QuoteApprovalRequired(
+                operation=request.operation,
+                payload_hash=canonical.hash,
+                quote=dict(quote_response),
+            )
+        if self.quote_store is None:
+            raise QuoteApprovalRequired(
+                operation=request.operation,
+                payload_hash=canonical.hash,
+                quote=dict(quote_response),
+            )
+        approval = self.quote_store.resolve(canonical.hash)
+        if approval is None:
+            raise QuoteApprovalRequired(
+                operation=request.operation,
+                payload_hash=canonical.hash,
+                quote=dict(quote_response),
+            )
+        try:
+            self.quote_store.consume(
+                approval_id=approval.approval_id,
+                current_payload_hash=canonical.hash,
+                max_observed_cost=cost,
+            )
+        except QuoteApprovalMismatch as exc:
+            raise exc
+        except ConsentApprovalMissing as exc:
+            raise QuoteApprovalRequired(
+                operation=request.operation,
+                payload_hash=canonical.hash,
+                quote=dict(quote_response),
+            ) from exc
+
+
+# -- module-level helpers -----------------------------------------------------
+
+
+def _hash_or_none(payload: Mapping[str, Any]) -> str | None:
+    try:
+        return payloads.sha256_hex(json.dumps(payload, sort_keys=True).encode("utf-8"))
+    except TypeError:
+        return None
+
+
+def _sanitize_api_request(operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a redacted, size-bounded view of the provider payload for audit logs.
+
+    Strips inline media bytes (data URLs) and signed URL query strings; the
+    full body is available via the on-disk sidecar metadata JSON.
+    """
+    cleaned: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and value.startswith("data:"):
+            mime = value[5:].split(";", 1)[0] or "application/octet-stream"
+            cleaned[key] = {
+                "kind": "local_media",
+                "mime_type": mime,
+                "redacted": True,
+            }
+        elif isinstance(value, str) and value.startswith(("http://", "https://")):
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(value)
+                cleaned[key] = {
+                    "host": parsed.hostname,
+                    "scheme": parsed.scheme,
+                    "path": parsed.path,
+                    "redacted_query": True,
+                }
+            except ValueError:
+                cleaned[key] = "[unparseable-url]"
+        elif isinstance(value, list):
+            cleaned[key] = [_summarize_list_member(item) for item in value]
+        else:
+            cleaned[key] = value
+    cleaned["$bridge_operation"] = operation
+    return cleaned
+
+
+def _summarize_list_member(item: Any) -> Any:
+    """Apply string-level redaction to a list item while preserving structure."""
+    if isinstance(item, str) and item.startswith("data:"):
+        mime = item[5:].split(";", 1)[0] or "application/octet-stream"
+        return {
+            "kind": "local_media",
+            "mime_type": mime,
+            "redacted": True,
+        }
+    if isinstance(item, str) and item.startswith(("http://", "https://")):
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(item)
+            return {
+                "host": parsed.hostname,
+                "scheme": parsed.scheme,
+                "path": parsed.path,
+                "redacted_query": True,
+            }
+        except ValueError:
+            return "[unparseable-url]"
+    if isinstance(item, str) and len(item) > 96:
+        return item[:64] + "..."
+    return item
+
+
+def _summarize_inputs(request: MediaRequest) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for key, value in request.inputs.items():
+        if isinstance(value, str):
+            if value.startswith("data:"):
+                summary.append({"name": key, "kind": "data_url", "bytes": len(value)})
+            elif value.startswith(("http://", "https://")):
+                summary.append({"name": key, "kind": "url", "redacted_query": True})
+            else:
+                path = Path(value).expanduser().resolve()
+                if path.is_file() and key in request.inputs:
+                    summary.append(
+                        {
+                            "name": key,
+                            "kind": "local_media",
+                            "path_hint": path.name,
+                            "bytes": path.stat().st_size,
+                            "sha256": payloads.sha256_hex(path.read_bytes()),
+                        }
+                    )
+                else:
+                    summary.append({"name": key, "kind": "string"})
+        elif isinstance(value, list):
+            summary.append({"name": key, "kind": "list", "count": len(value)})
+        elif isinstance(value, Mapping):
+            summary.append({"name": key, "kind": "object"})
+        else:
+            summary.append({"name": key, "kind": type(value).__name__})
+    return summary
+
+
+def _redact_model_for_storage(payload: Mapping[str, Any]) -> str:
+    model = payload.get("model") or payload.get("modelId")
+    return str(model) if model is not None else ""
+
+
+__all__ = [
+    "ENDPOINT_SIZE_LIMITS",
+    "MediaRunner",
+]

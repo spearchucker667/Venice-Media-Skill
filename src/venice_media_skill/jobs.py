@@ -44,7 +44,8 @@ class JobStore:
 
     def update(self, queue_id: str, **changes: Any) -> dict[str, Any]:
         record = self.get(queue_id)
-        record.update(redact_data(changes))
+        sanitized: dict[str, Any] = {key: redact_data(value) for key, value in changes.items()}
+        record.update(sanitized)
         record["updated_at"] = utc_now_iso()
         self._write(queue_id, record)
         return record

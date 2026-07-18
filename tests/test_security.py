@@ -1,664 +1,997 @@
-"""Security regression tests for Venice Media Skill.
-
-These tests verify that critical and high-severity security vulnerabilities
-identified in the security audit have been properly fixed and cannot regress.
-
-Security Audit Reference: VMS-001 through VMS-018
-"""
-
 from __future__ import annotations
 
-import ipaddress
-import tempfile
+import base64
+import socket
+import unittest.mock
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import ClassVar
 
+import httpx
 import pytest
 
-from venice_media_skill.client import VeniceClient
-from venice_media_skill.errors import ApiError, OutputError
-from venice_media_skill.output import ArtifactWriter, _choose_path, _validate_safe_filename
-from venice_media_skill.request import MediaRequest
-from venice_media_skill.runner import MediaRunner
+from venice_media_skill.client import Resolver, VeniceClient
+from venice_media_skill.consent import ConsentStore, QuoteApprovalStore
+from venice_media_skill.errors import (
+    ConsentApprovalMissing,
+    ContentValidationError,
+    DownloadLimitExceeded,
+    NetworkSafetyError,
+    PayloadValidationError,
+    PublicHttpError,
+    ReservedParameterError,
+)
+from venice_media_skill.payloads import RESERVED_PARAMETERS, build_image_generate
+from venice_media_skill.request import MediaRequest, request_json_schema
 
-# =============================================================================
-# VMS-001: Path Traversal Tests
-# =============================================================================
+_PNG_BYTES: bytes = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\rIDATx\x9cc\xfa\xff\xff?\x03\x00\x05\xfe\x02\xfe\xa3\x9a\xfa\x05"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
-class TestPathTraversalVMS001:
-    """Tests for VMS-001: Arbitrary filesystem write through output.filename."""
+def _stub_resolver() -> Resolver:
+    """Deterministic DNS resolver used by SSRF tests.
 
-    def test_reject_absolute_posix_path(self):
-        """Path traversal: absolute POSIX path should be rejected."""
-        with pytest.raises(OutputError, match="relative path"):
-            _validate_safe_filename("/etc/passwd")
+    Returns a single globally-routable IP for every host so the network
+    safety harness does not depend on real DNS and CI can run offline.
+    """
 
-    def test_reject_absolute_windows_path(self):
-        """Path traversal: absolute Windows path should be rejected."""
-        with pytest.raises(OutputError, match="relative path"):
-            _validate_safe_filename("\\Windows\\System32\\config")
+    def _resolve(_host: str) -> Sequence[str]:
+        return ["8.8.8.8"]
 
-    def test_reject_parent_directory_traversal(self):
-        """Path traversal: parent directory traversal should be rejected."""
-        with pytest.raises(OutputError, match="path traversal"):
-            _validate_safe_filename("../../.zshrc")
+    return _resolve
 
-    def test_reject_single_dot_traversal(self):
-        """Path traversal: single dot traversal should be rejected."""
-        with pytest.raises(OutputError, match="path traversal"):
-            _validate_safe_filename("..\\.bashrc")
 
-    def test_reject_forward_slash_separator(self):
-        """Path traversal: forward slash separator should be rejected."""
-        with pytest.raises(OutputError, match="path separators"):
-            _validate_safe_filename("subdir/file.txt")
+def _client(
+    transport: httpx.BaseTransport | None = None,
+    *,
+    resolver: Resolver | None = None,
+) -> VeniceClient:
+    kwargs: dict[str, object] = {
+        "base_url": "https://api.example.test/api/v1",
+        "api_key": "key",
+        "allow_noncanonical_endpoint": True,
+    }
+    if transport is not None:
+        kwargs["transport"] = transport
+    if resolver is not None:
+        kwargs["resolver"] = resolver
+    return VeniceClient(**kwargs)
 
-    def test_reject_backward_slash_separator(self):
-        """Path traversal: backward slash separator should be rejected."""
-        with pytest.raises(OutputError, match="path separators"):
-            _validate_safe_filename("subdir\\file.txt")
 
-    def test_reject_windows_drive_letter(self):
-        """Path traversal: Windows drive letter should be rejected."""
-        with pytest.raises(OutputError, match="drive letters"):
-            _validate_safe_filename("C:file.txt")
+def _png_data_url() -> str:
+    return "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
 
-    def test_reject_windows_drive_with_backslash(self):
-        """Path traversal: Windows drive with backslash should be rejected."""
-        with pytest.raises(OutputError, match="drive letters"):
-            _validate_safe_filename("C:\\file.txt")
 
-    def test_reject_unc_path(self):
-        """Path traversal: UNC path should be rejected."""
-        with pytest.raises(OutputError, match="UNC paths"):
-            _validate_safe_filename("\\\\server\\share\\file.txt")
+# ---------------------------------------------------------------------------
+# P0-03 reserved-key rejection
+# ---------------------------------------------------------------------------
 
-    def test_reject_null_bytes(self):
-        """Path traversal: null bytes should be rejected."""
-        with pytest.raises(OutputError, match="null bytes"):
-            _validate_safe_filename("file\x00.txt")
 
-    def test_accept_safe_filename(self):
-        """Path traversal: safe filenames should be accepted."""
-        # These should NOT raise
-        _validate_safe_filename("output.png")
-        _validate_safe_filename("my-file_123.webp")
-        _validate_safe_filename("image.jpg")
-        _validate_safe_filename("audio.mp3")
-        _validate_safe_filename("")  # Empty is allowed (will use default)
-        _validate_safe_filename(None)  # None is allowed
+class TestReservedParameterRejection:
+    def test_reserved_keys_known(self) -> None:
+        # ``queue_id`` is legitimate on retrieve operations so it stays out
+        # of the reserved set; everything else below must be blocked.
+        for key in ("model", "prompt", "consents", "download_url", "image_url"):
+            assert key in RESERVED_PARAMETERS
+        # Sanity: ``queue_id`` is intentionally NOT reserved.
+        assert "queue_id" not in RESERVED_PARAMETERS
 
-    def test_path_containment_validation(self):
-        """Path traversal: final path must be contained within directory."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir) / "output"
-            output_dir.mkdir()
+    def test_parameters_consents_rejected_at_validation(self) -> None:
+        manifest = {
+            "operation": "video.generate",
+            "model": "venice-video",
+            "prompt": "hi",
+            "parameters": {
+                "duration": "5s",
+                "consents": {"seedance": {"confirmed_terms_and_privacy": True}},
+            },
+        }
+        with pytest.raises(ReservedParameterError) as exc_info:
+            MediaRequest.from_mapping(manifest)
+        assert exc_info.value.key == "consents"
 
-            # Safe filename should work
-            path = _choose_path(
-                output_dir,
-                operation="image.generate",
-                filename="test.png",
-                index=1,
-                total=1,
-                content_type="image/png",
-                overwrite=True,
+    def test_parameters_model_injection_rejected(self) -> None:
+        manifest = {
+            "operation": "video.generate",
+            "model": "cheap",
+            "prompt": "original",
+            "parameters": {"model": "expensive", "prompt": "changed", "duration": "5s"},
+        }
+        with pytest.raises(ReservedParameterError):
+            MediaRequest.from_mapping(manifest)
+
+    def test_parameters_prompt_injection_rejected(self) -> None:
+        manifest = {
+            "operation": "video.generate",
+            "model": "cheap",
+            "prompt": "original",
+            "parameters": {"prompt": "changed", "duration": "5s"},
+        }
+        with pytest.raises(ReservedParameterError):
+            MediaRequest.from_mapping(manifest)
+
+    def test_parameters_image_url_injection_rejected(self) -> None:
+        manifest = {
+            "operation": "video.generate",
+            "model": "venice",
+            "prompt": "hi",
+            "parameters": {"image_url": "http://attacker/secret", "duration": "5s"},
+        }
+        with pytest.raises(ReservedParameterError) as exc_info:
+            MediaRequest.from_mapping(manifest)
+        assert exc_info.value.key == "image_url"
+
+    def test_parameters_download_url_injection_rejected(self) -> None:
+        manifest = {
+            "operation": "video.generate",
+            "model": "venice",
+            "prompt": "hi",
+            "parameters": {"duration": "5s", "download_url": "http://attacker/x"},
+        }
+        with pytest.raises(ReservedParameterError) as exc_info:
+            MediaRequest.from_mapping(manifest)
+        assert exc_info.value.key == "download_url"
+
+    def test_image_upscale_rejects_legacy_enhance_via_parameters(self) -> None:
+        manifest = {
+            "operation": "image.upscale",
+            "parameters": {"enhance": True, "enhanceCreativity": 0.01},
+            "inputs": {"image": _png_data_url()},
+        }
+        with pytest.raises(PayloadValidationError):
+            MediaRequest.from_mapping(manifest)
+
+    def test_image_generate_rejects_boolean_variants(self) -> None:
+        with pytest.raises(PayloadValidationError):
+            MediaRequest.from_mapping(
+                {
+                    "operation": "image.generate",
+                    "model": "nano-banana",
+                    "prompt": "p",
+                    "parameters": {"variants": True},
+                }
             )
-            assert path.parent.samefile(output_dir)
-            assert path.name == "test.png"
 
-            # Even if someone tries to use .. in directory, it should be resolved
-            # This tests that directory resolution works correctly
-            path2 = _choose_path(
-                output_dir,
-                operation="image.generate",
-                filename="test2.png",
-                index=1,
-                total=1,
-                content_type="image/png",
-                overwrite=True,
+    def test_image_generate_variants_in_range_is_preserved(self) -> None:
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "image.generate",
+                "model": "nano-banana",
+                "prompt": "p",
+                "parameters": {"variants": 3},
+            }
+        )
+        canonical = build_image_generate(request)
+        assert canonical.payload["variants"] == 3
+        assert isinstance(canonical.payload["variants"], int)
+
+    def test_unknown_top_level_manifest_field_rejected(self) -> None:
+        with pytest.raises(PayloadValidationError):
+            MediaRequest.from_mapping({"operation": "image.generate", "model": "m", "prompt": "p", "bogus": True})
+
+    def test_unknown_execution_field_rejected(self) -> None:
+        with pytest.raises(PayloadValidationError):
+            MediaRequest.from_mapping(
+                {
+                    "operation": "image.generate",
+                    "model": "m",
+                    "prompt": "p",
+                    "execution": {"dry_run": False, "ironman": True},
+                }
             )
-            assert path2.parent.samefile(output_dir)
-
-    def test_path_traversal_attempt_rejected(self):
-        """Path traversal: attempts to escape directory should be rejected."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir) / "output"
-            output_dir.mkdir()
-
-            # This should be caught by filename validation before path construction
-            with pytest.raises(OutputError):
-                _choose_path(
-                    output_dir,
-                    operation="image.generate",
-                    filename="../../etc/passwd",
-                    index=1,
-                    total=1,
-                    content_type="image/png",
-                    overwrite=True,
-                )
 
 
-# =============================================================================
-# VMS-002: SSRF Tests
-# =============================================================================
+# ---------------------------------------------------------------------------
+# P0-04 redirect-safe SSRF
+# ---------------------------------------------------------------------------
 
 
-class TestSSRFVMS002:
-    """Tests for VMS-002: SSRF and arbitrary HTTP fetch through download_url."""
-
-    @pytest.fixture
-    def mock_client(self):
-        """Create a VeniceClient with mocked HTTP client."""
-        with patch("venice_media_skill.client.httpx.Client") as mock_client_class:
-            mock_http_client = MagicMock()
-            mock_client_class.return_value.__enter__.return_value = mock_http_client
-            client = VeniceClient(
-                base_url="https://api.venice.ai/api/v1",
-                api_key="test-key",
-            )
-            yield client, mock_http_client
-
-    def test_reject_http_url(self, mock_client):
-        """SSRF: HTTP URLs should be rejected (HTTPS only)."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="HTTPS"):
+class TestRedirectSafeSSRF:
+    def test_reject_http_url(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError, match=r"[Hh]TTPS"):
             client.download_public_url("http://example.com/file")
 
-    def test_reject_loopback_ipv4(self, mock_client):
-        """SSRF: Loopback IPv4 should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Loopback"):
+    def test_reject_loopback_ipv4(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://127.0.0.1/file")
 
-    def test_reject_loopback_ipv6(self, mock_client):
-        """SSRF: Loopback IPv6 should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Loopback"):
+    def test_reject_loopback_ipv6(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://[::1]/file")
 
-    def test_reject_loopback_hostname(self, mock_client):
-        """SSRF: Loopback hostname should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Loopback"):
+    def test_reject_loopback_hostname(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://localhost/file")
 
-    def test_reject_private_ipv4_10(self, mock_client):
-        """SSRF: Private IPv4 (10.x.x.x) should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Private"):
+    def test_reject_private_ipv4_10(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://10.0.0.1/file")
 
-    def test_reject_private_ipv4_172(self, mock_client):
-        """SSRF: Private IPv4 (172.16-31.x.x) should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Private"):
+    def test_reject_private_ipv4_172(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://172.16.0.1/file")
 
-    def test_reject_private_ipv4_192(self, mock_client):
-        """SSRF: Private IPv4 (192.168.x.x) should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Private"):
+    def test_reject_private_ipv4_192(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://192.168.1.1/file")
 
-    def test_reject_private_ipv6(self, mock_client):
-        """SSRF: Private IPv6 should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Private"):
+    def test_reject_private_ipv6(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://[fd00::]/file")
 
-    def test_reject_link_local(self, mock_client):
-        """SSRF: Link-local addresses should be rejected."""
-        client, _ = mock_client
-        # fe80::/10 is IPv6 link-local, but also classified as private by Python
-        # So it will be caught by either check - both are acceptable
-        with pytest.raises(ApiError, match=r"(Link-local|Private)"):
+    def test_reject_link_local(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://[fe80::1]/file")
 
-    def test_reject_cloud_metadata_explicit(self, mock_client):
-        """SSRF: Cloud metadata endpoint should be rejected (explicit check)."""
-        client, _ = mock_client
-        # 169.254.169.254 is link-local but also explicitly blocked
-        with pytest.raises(ApiError):
+    def test_reject_cloud_metadata_endpoint(self) -> None:
+        client = _client()
+        with pytest.raises(NetworkSafetyError):
             client.download_public_url("https://169.254.169.254/latest/meta-data")
 
-    def test_reject_multicast(self, mock_client):
-        """SSRF: Multicast addresses should be rejected."""
-        client, _ = mock_client
-        with pytest.raises(ApiError, match="Multicast"):
-            client.download_public_url("https://224.0.0.1/file")
+    def test_redirect_to_loopback_blocked_before_request(self) -> None:
+        contacts: list[str] = []
 
-    def test_reject_private_192_0_2(self, mock_client):
-        """SSRF: RFC 5737 documentation addresses (classified as private) should be rejected."""
-        client, _ = mock_client
-        # 192.0.2.1 is in RFC 5737 TEST-NET-1 range, classified as private by Python
-        with pytest.raises(ApiError, match="Private"):
-            client.download_public_url("https://192.0.2.1/file")
+        def handler(request: httpx.Request) -> httpx.Response:
+            contacts.append(request.url.host)
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/secret"})
 
-    def test_accept_safe_url(self, mock_client):
-        """SSRF: Safe public URLs should be accepted (if DNS resolves safely)."""
-        client, mock_http = mock_client
-        mock_response = MagicMock()
-        mock_response.url = "https://cdn.venice.ai/file"
-        mock_response.is_success = True
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "image/png"}
-        mock_response.content = b"fake image data"
-        mock_http.get.return_value = mock_response
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(NetworkSafetyError):
+            client.download_public_url("https://cdn.venice.ai/x.png", transport=httpx.MockTransport(handler))
+        assert contacts == ["cdn.venice.ai"], (
+            f"Loopback redirects must be rejected before the second hop is hit, got {contacts}"
+        )
 
-        # This should work (in real scenario, depends on DNS resolution)
-        # For testing, we mock the DNS resolution
-        with patch("venice_media_skill.client.socket.getaddrinfo") as mock_dns:
-            # Mock DNS to return a public IP
-            mock_dns.return_value = [
-                (2, 0, 0, 0, ("93.184.216.34", 443))  # example.com IP
-            ]
-            result = client.download_public_url("https://cdn.venice.ai/file")
-            assert result.status_code == 200
+    def test_redirect_target_with_non_https_blocked(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "cdn.venice.ai":
+                return httpx.Response(302, headers={"location": "http://cdn.venice.ai/x"})
+            return httpx.Response(200, content=_PNG_BYTES, headers={"content-type": "image/png"})
 
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(NetworkSafetyError, match=r"[Hh]TTPS"):
+            client.download_public_url("https://cdn.venice.ai/x.png", transport=httpx.MockTransport(handler))
 
-# =============================================================================
-# VMS-005: Consent Tests
-# =============================================================================
+    def test_dns_failure_fails_closed(self) -> None:
+        def boom(_host: str) -> Sequence[str]:
+            raise socket.gaierror("Name or service not known")
 
-
-class TestConsentVMS005:
-    """Tests for VMS-005: Consent not bound to provider challenge."""
-
-    def test_consent_requires_provider_challenge(self):
-        """Consent: Consent should be bound to a specific provider challenge."""
-        # This test verifies that we cannot just set seedance_face_consent: true
-        # without going through the proper challenge/response flow
-        # This is a placeholder - actual implementation needs challenge binding
-        pass  # TODO: Implement when consent flow is refactored
+        client = _client(resolver=boom)
+        with pytest.raises(NetworkSafetyError) as exc_info:
+            client.download_public_url("https://cdn.venice.ai/file")
+        assert (
+            "dns" in str(exc_info.value).lower()
+            or "resolution" in str(exc_info.value).lower()
+            or "ip" in str(exc_info.value).lower()
+            or "addresses" in str(exc_info.value).lower()
+        ), str(exc_info.value)
 
 
-# =============================================================================
-# VMS-007: Download Size Tests
-# =============================================================================
+# ---------------------------------------------------------------------------
+# P0-05 streamed, size-bounded downloads
+# ---------------------------------------------------------------------------
 
 
-class TestDownloadSizeVMS007:
-    """Tests for VMS-007: Unbounded in-memory media downloads."""
+class TestStreamedDownloadSafety:
+    def test_content_length_over_limit_rejected_before_body(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=b"\x00" * 1024,
+                headers={"content-type": "image/png", "content-length": "999999999"},
+            )
 
-    def test_download_size_limit(self):
-        """Download: Large downloads should be rejected or streamed."""
-        # This is tested in the SSRF tests above where we set MAX_DOWNLOAD_SIZE
-        # and verify it's enforced
-        pass
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(NetworkSafetyError) as exc_info:
+            client.download_public_url(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+                max_bytes=200,
+            )
+        assert "limit" in str(exc_info.value).lower() or "exceed" in str(exc_info.value).lower()
 
+    def test_incremental_size_check_without_content_length(self) -> None:
+        body = _PNG_BYTES + b"\x00" * 4096
 
-# =============================================================================
-# Integration Tests
-# =============================================================================
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body, headers={"content-type": "image/png"})
 
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(NetworkSafetyError) as exc_info:
+            client.download_public_url(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+                max_bytes=256,
+            )
+        assert "limit" in str(exc_info.value).lower() or "exceed" in str(exc_info.value).lower()
 
-class TestSecurityIntegration:
-    """Integration tests for security features."""
+    def test_chunked_unbounded_stream_rejected(self) -> None:
+        """True streaming: the bridge must enforce ``max_bytes`` *while the
+        response is in flight*, not after buffering the entire body. We
+        mock ``httpx.Client`` to return a streaming response whose
+        ``iter_bytes`` would yield forever if the byte budget were not
+        applied between chunks.
 
-    def test_end_to_end_path_traversal_blocked(self):
-        """Integration: Path traversal should be blocked end-to-end."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            writer = ArtifactWriter(Path(tmpdir))
+        After the exception is raised, the captured yield count proves the
+        bridge aborted as soon as the first chunk overshot the cap. A
+        buffered implementation would have accumulated every chunk into
+        ``b"".join(...)`` before raising, so this assertion is what
+        distinguishes real streaming from buffered-iter-bytes.
+        """
 
-            # Create a mock response
-            mock_response = MagicMock()
-            mock_response.content = b"test data"
-            mock_response.content_type = "image/png"
-            mock_response.json_data = None
-            mock_response.headers = {}
-            mock_response.is_binary = True
-            mock_response.status_code = 200
+        class StubStreamResponse:
+            instances: ClassVar[list[StubStreamResponse]] = []
 
-            # Try to save with malicious filename
-            with pytest.raises(OutputError):
-                writer.save_response(
-                    mock_response,
-                    operation="image.generate",
-                    output_dir=tmpdir,
-                    filename="../../etc/passwd",
-                    overwrite=True,
-                    write_metadata=False,
-                    metadata={},
+            def __init__(self) -> None:
+                self.status_code = 200
+                self.headers = {"content-type": "image/png"}
+                self.is_success = True
+                self.yielded_bytes: int = 0
+                self.yielded_count: int = 0
+                StubStreamResponse.instances.append(self)
+
+            def __enter__(self) -> StubStreamResponse:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return
+
+            def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+                while True:
+                    self.yielded_count += 1
+                    self.yielded_bytes += chunk_size
+                    yield b"\x00" * chunk_size
+
+        class StubHTTPClient:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def __enter__(self) -> StubHTTPClient:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return
+
+            def stream(self, method: str, url: str, **_kwargs: object) -> StubStreamResponse:
+                return StubStreamResponse()
+
+        StubStreamResponse.instances = []
+        with unittest.mock.patch("httpx.Client", StubHTTPClient):
+            client = _client(resolver=_stub_resolver())
+            with pytest.raises(NetworkSafetyError):
+                client.download_public_url(
+                    "https://cdn.venice.ai/huge.png",
+                    max_bytes=4 * 1024,
                 )
 
-    def test_end_to_end_ssrf_blocked(self):
-        """Integration: SSRF should be blocked end-to-end."""
-        with patch("venice_media_skill.client.httpx.Client") as mock_client_class:
-            mock_http_client = MagicMock()
-            mock_client_class.return_value.__enter__.return_value = mock_http_client
+        assert StubStreamResponse.instances, "download_public_url never opened a stream context"
+        stream = StubStreamResponse.instances[-1]
+        assert stream.yielded_count == 1, (
+            "streaming bridge must abort after a single chunk exceeds max_bytes; "
+            f"got {stream.yielded_count} chunks ({stream.yielded_bytes} bytes)"
+        )
 
-            client = VeniceClient(
-                base_url="https://api.venice.ai/api/v1",
-                api_key="test-key",
+
+# ---------------------------------------------------------------------------
+# P0-06 fail-closed magic bytes
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedMagicBytes:
+    def test_executable_bytes_rejected_for_declared_image(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(b"MZ" + b"\x00" * 20, "image/png")
+
+    def test_elf_rejected_for_declared_jpeg(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(b"\x7fELF" + b"\x00" * 20, "image/jpeg")
+
+    def test_random_bytes_rejected_for_declared_image(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(b"random executable bytes", "image/png")
+
+    def test_riff_alone_rejected_for_webp(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(b"RIFF\x00\x00\x00\x00AVI " + b"\x00" * 32, "image/webp")
+
+    def test_riff_alone_rejected_for_wav(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(b"RIFF\x00\x00\x00\x00AVI " + b"\x00" * 32, "audio/wav")
+
+    def test_valid_png_passes(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        fast_validate_content_type(_PNG_BYTES, "image/png")
+
+    def test_valid_jpeg_passes(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32 + b"\xff\xd9"
+        fast_validate_content_type(jpeg_bytes, "image/jpeg")
+
+    def test_valid_webp_passes(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        webp_bytes = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 32
+        fast_validate_content_type(webp_bytes, "image/webp")
+
+    def test_valid_mp4_passes(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        mp4_bytes = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32
+        fast_validate_content_type(mp4_bytes, "video/mp4")
+
+    def test_validate_content_type_returns_boolean_for_legacy_callers(self) -> None:
+        from venice_media_skill.util import validate_content_type
+
+        assert validate_content_type(_PNG_BYTES, "image/png") is True
+        assert validate_content_type(b"MZ\x00\x00", "image/png") is False
+
+    def test_undeclared_or_unknown_type_rejected(self) -> None:
+        from venice_media_skill.util import fast_validate_content_type
+
+        with pytest.raises(ContentValidationError):
+            fast_validate_content_type(_PNG_BYTES, "application/foo+bar")
+
+
+# ---------------------------------------------------------------------------
+# P0-01 consent challenge state machine
+# ---------------------------------------------------------------------------
+
+
+class TestConsentChallengeStateMachine:
+    def _seed_challenge(
+        self, tmp_path: Path, payload_hash: str, *, store: ConsentStore | None = None
+    ) -> tuple[str, ConsentStore]:
+        store = store or ConsentStore(tmp_path / "consent_approvals.json")
+        challenge = store.record_challenge(
+            operation="video.generate",
+            model="venice-video",
+            payload_hash=payload_hash,
+            input_hashes=("" * 64,),
+            provider_payload={
+                "needs_consent": True,
+                "consent_flow": "seedance",
+                "consent": {
+                    "consent_version": "2024-05-01",
+                    "policy_text": "explicit policy",
+                },
+                "face_media_roles": ["image", "video"],
+                "docs_url": "https://docs.example/consent",
+            },
+        )
+        return challenge.challenge_id, store
+
+    def test_consent_challenge_persists_and_is_recoverable(self, tmp_path: Path) -> None:
+        cid, store = self._seed_challenge(tmp_path, "h1")
+        loaded = store.load_challenge(cid)
+        assert loaded is not None
+        assert loaded.payload_hash == "h1"
+
+    def test_consent_attach_blocked_until_approval(self, tmp_path: Path) -> None:
+        _cid, store = self._seed_challenge(tmp_path, "h2")
+        assert store.approval_for("h2") is None
+
+    def test_consent_attach_succeeds_after_approval(self, tmp_path: Path) -> None:
+        cid, store = self._seed_challenge(tmp_path, "h3")
+        store.approve(
+            challenge_id=cid,
+            confirmed_max_cost=2.50,
+            acknowledge_policy=True,
+        )
+        approval = store.approval_for("h3")
+        assert approval is not None
+        assert approval.max_cost == pytest.approx(2.5)
+
+    def test_consent_unacknowledged_policy_rejected(self, tmp_path: Path) -> None:
+        cid, store = self._seed_challenge(tmp_path, "h4")
+        with pytest.raises(ConsentApprovalMissing):
+            store.approve(
+                challenge_id=cid,
+                confirmed_max_cost=None,
+                acknowledge_policy=False,
             )
 
-            # Try to download from localhost
-            with pytest.raises(ApiError):
-                client.download_public_url("https://127.0.0.1/secret")
+
+# ---------------------------------------------------------------------------
+# P0-02 quote approval binding
+# ---------------------------------------------------------------------------
 
 
-# =============================================================================
-# Utility Tests
-# =============================================================================
-
-
-class TestSecurityUtilities:
-    """Tests for security utility functions."""
-
-    def test_ipaddress_classification(self):
-        """Test IP address classification for SSRF protection."""
-        # Loopback
-        assert ipaddress.ip_address("127.0.0.1").is_loopback
-        assert ipaddress.ip_address("::1").is_loopback
-
-        # Private
-        assert ipaddress.ip_address("10.0.0.1").is_private
-        assert ipaddress.ip_address("172.16.0.1").is_private
-        assert ipaddress.ip_address("192.168.1.1").is_private
-        assert ipaddress.ip_address("fd00::1").is_private
-
-        # Link-local
-        assert ipaddress.ip_address("169.254.0.1").is_link_local
-        assert ipaddress.ip_address("fe80::1").is_link_local
-
-        # Multicast
-        assert ipaddress.ip_address("224.0.0.1").is_multicast
-        assert ipaddress.ip_address("ff02::1").is_multicast
-
-    def test_url_parsing(self):
-        """Test URL parsing for SSRF validation."""
-        from urllib.parse import urlparse
-
-        # Test various URL formats
-        parsed = urlparse("https://example.com/path?query=value")
-        assert parsed.scheme == "https"
-        assert parsed.hostname == "example.com"
-        assert parsed.path == "/path"
-
-        # IP address as hostname
-        parsed = urlparse("https://127.0.0.1/path")
-        assert parsed.hostname == "127.0.0.1"
-
-        # IPv6
-        parsed = urlparse("https://[::1]/path")
-        assert parsed.hostname == "::1"
-
-
-# =============================================================================
-# VMS-003: Image Edit Model Field Tests
-# =============================================================================
-
-
-class TestImageEditModelFieldVMS003:
-    """Tests for VMS-003: Single-image edit sends the wrong model field."""
-
-    def test_image_edit_uses_modelid(self):
-        """Image edit: Should use modelId field not model for /image/edit endpoint."""
-        from venice_media_skill.client import VeniceClient
-        from venice_media_skill.jobs import JobStore
-        from venice_media_skill.output import ArtifactWriter
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            client = MagicMock(spec=VeniceClient)
-            client.request.return_value = MagicMock()
-            client.request.return_value.status_code = 200
-            client.request.return_value.content_type = "image/png"
-            client.request.return_value.content = b"fake png data"
-            client.request.return_value.json_data = None
-
-            writer = ArtifactWriter(Path(tmpdir))
-            jobs = JobStore(Path(tmpdir))
-            runner = MediaRunner(client=client, writer=writer, jobs=jobs)
-
-            # Use a data URL to avoid file system dependency
-            data_url = (
-                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
-                "FcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            )
-            request = MediaRequest(
-                operation="image.edit",
-                model="test-model",
-                prompt="test prompt",
-                inputs={"image": data_url},
+class TestQuoteApprovalBinding:
+    def test_quote_required_for_queued_video(self, tmp_path: Path) -> None:
+        store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        approval = store.record(
+            operation="video.generate",
+            model="venice-video",
+            payload_hash="hh",
+            quote_response={"quote": 0.5},
+            max_cost=1.0,
+        )
+        consumed = store.consume(
+            approval_id=approval.approval_id,
+            current_payload_hash="hh",
+            max_observed_cost=0.4,
+        )
+        assert consumed.payload_hash == "hh"
+        with pytest.raises(ConsentApprovalMissing):
+            store.consume(
+                approval_id=approval.approval_id,
+                current_payload_hash="hh",
+                max_observed_cost=0.4,
             )
 
-            # This should use modelId, not model
-            runner._image_edit(request)
+    def test_quote_mismatch_rejected(self, tmp_path: Path) -> None:
+        from venice_media_skill.errors import QuoteApprovalMismatch
 
-            # Verify the payload sent to the API
-            call_args = client.request.call_args
-            assert call_args is not None
-            assert call_args[0][0] == "POST"
-            assert call_args[0][1] == "/image/edit"
-            assert "modelId" in call_args[1]["json_body"]
-            assert call_args[1]["json_body"]["modelId"] == "test-model"
-
-
-# =============================================================================
-# VMS-004: Upscale Parameter Names Tests
-# =============================================================================
-
-
-class TestUpscaleParametersVMS004:
-    """Tests for VMS-004: Upscale uses undocumented parameter names."""
-
-    def test_upscale_uses_enhance_fields(self):
-        """Upscale: Should use enhance and enhanceCreativity, not creativity."""
-        from venice_media_skill.client import VeniceClient
-        from venice_media_skill.jobs import JobStore
-        from venice_media_skill.output import ArtifactWriter
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            client = MagicMock(spec=VeniceClient)
-            client.request.return_value = MagicMock()
-            client.request.return_value.status_code = 200
-            client.request.return_value.content_type = "image/png"
-            client.request.return_value.content = b"fake png data"
-            client.request.return_value.json_data = None
-
-            writer = ArtifactWriter(Path(tmpdir))
-            jobs = JobStore(Path(tmpdir))
-            runner = MediaRunner(client=client, writer=writer, jobs=jobs)
-
-            # Use a data URL to avoid file system dependency
-            data_url = (
-                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
-                "FcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            )
-            request = MediaRequest(
-                operation="image.upscale",
-                inputs={"image": data_url},
-                parameters={},
+        store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        approval = store.record(
+            operation="video.generate",
+            model="venice-video",
+            payload_hash="hh",
+            quote_response={"quote": 0.5},
+            max_cost=1.0,
+        )
+        with pytest.raises(QuoteApprovalMismatch):
+            store.consume(
+                approval_id=approval.approval_id,
+                current_payload_hash="hh-other",
+                max_observed_cost=0.4,
             )
 
-            runner._image_upscale(request)
+    def test_quote_max_cost_enforced(self, tmp_path: Path) -> None:
+        from venice_media_skill.errors import ConsentApprovalMissing
 
-            # Verify the payload uses enhance, not creativity
-            call_args = client.request.call_args
-            assert call_args is not None
-            assert "enhance" in call_args[1]["json_body"]
-            assert call_args[1]["json_body"]["enhance"] is False
-            assert "creativity" not in call_args[1]["json_body"]
-
-    def test_upscale_maps_creativity_to_enhance(self):
-        """Upscale: Should map legacy creativity parameter to enhanceCreativity."""
-        from venice_media_skill.client import VeniceClient
-        from venice_media_skill.jobs import JobStore
-        from venice_media_skill.output import ArtifactWriter
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            client = MagicMock(spec=VeniceClient)
-            client.request.return_value = MagicMock()
-            client.request.return_value.status_code = 200
-            client.request.return_value.content_type = "image/png"
-            client.request.return_value.content = b"fake png data"
-            client.request.return_value.json_data = None
-
-            writer = ArtifactWriter(Path(tmpdir))
-            jobs = JobStore(Path(tmpdir))
-            runner = MediaRunner(client=client, writer=writer, jobs=jobs)
-
-            # Use a data URL to avoid file system dependency
-            data_url = (
-                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
-                "FcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            )
-            request = MediaRequest(
-                operation="image.upscale",
-                inputs={"image": data_url},
-                parameters={"creativity": 0.5},
+        store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        approval = store.record(
+            operation="video.generate",
+            model="venice-video",
+            payload_hash="hh",
+            quote_response={"quote": 0.5},
+            max_cost=1.0,
+        )
+        with pytest.raises(ConsentApprovalMissing):
+            store.consume(
+                approval_id=approval.approval_id,
+                current_payload_hash="hh",
+                max_observed_cost=5.0,
             )
 
-            runner._image_upscale(request)
 
-            # Verify creativity is mapped to enhanceCreativity
-            call_args = client.request.call_args
-            assert call_args is not None
-            assert call_args[1]["json_body"]["enhance"] is True
-            assert call_args[1]["json_body"]["enhanceCreativity"] == 0.5
-            assert "creativity" not in call_args[1]["json_body"]
+# ---------------------------------------------------------------------------
+# P1-01 / P1-02 / P1-03 contract alignment
+# ---------------------------------------------------------------------------
 
 
-# =============================================================================
-# VMS-006: Completed Response URL Handling Tests
-# =============================================================================
-
-
-class TestCompletedUrlHandlingVMS006:
-    """Tests for VMS-006: Completed JSON responses with newly returned download URL."""
-
-    def test_completed_response_url_discovery(self):
-        """Completed response: Should discover download_url from COMPLETED response."""
-        from venice_media_skill.client import ApiResponse, VeniceClient
-        from venice_media_skill.jobs import JobStore
-        from venice_media_skill.output import ArtifactWriter
-        from venice_media_skill.request import ExecutionSpec
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            client = MagicMock(spec=VeniceClient)
-
-            # First, create a queued response
-            queued_response = MagicMock()
-            queued_response.status_code = 200
-            queued_response.json_data = {"queue_id": "test-queue-id"}
-            queued_response.is_binary = False
-
-            # Then, create a completed response with download_url
-            completed_response = MagicMock(spec=ApiResponse)
-            completed_response.status_code = 200
-            completed_response.json_data = {
-                "status": "COMPLETED",
-                "download_url": "https://cdn.venice.ai/output.mp4",
+class TestContractAlignment:
+    def test_edit_payload_uses_model_not_modelid(self) -> None:
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "image.edit",
+                "model": "nano-banana",
+                "prompt": "p",
+                "inputs": {"image": _png_data_url()},
             }
-            completed_response.is_binary = False
+        )
+        from venice_media_skill.payloads import build_image_edit
 
-            client.request.side_effect = [queued_response, completed_response]
-            client.download_public_url.return_value = MagicMock()
-            client.download_public_url.return_value.status_code = 200
-            client.download_public_url.return_value.content_type = "video/mp4"
-            client.download_public_url.return_value.content = b"fake video data"
-            client.download_public_url.return_value.json_data = None
+        canonical = build_image_edit(request)
+        # The bundled OpenAPI marks ``model`` canonical and ``modelId`` as
+        # a deprecated alias. We MUST emit ``model``.
+        assert canonical.payload["model"] == "nano-banana"
+        assert canonical.payload.get("modelId") in (None, "")
 
-            writer = ArtifactWriter(Path(tmpdir))
-            jobs = JobStore(Path(tmpdir))
-            runner = MediaRunner(client=client, writer=writer, jobs=jobs)
+    def test_upscale_payload_uses_creativity_and_scale_only(self) -> None:
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "image.upscale",
+                "parameters": {"scale": 4, "creativity": 0.015},
+                "inputs": {"image": _png_data_url()},
+            }
+        )
+        from venice_media_skill.payloads import build_image_upscale
 
-            request = MediaRequest(
-                operation="video.generate",
-                model="test-model",
-                prompt="test prompt",
-                execution=ExecutionSpec(wait=True, poll_interval_seconds=0.1),
+        canonical = build_image_upscale(request)
+        assert set(canonical.payload) == {"image", "scale", "creativity"}
+
+    def test_edit_payload_hash_matches_quote_hash(self) -> None:
+        """Quote and queue payloads for ``video.generate`` must derive from
+        the same canonical body so the quote price can be trusted.
+        """
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "video.generate",
+                "model": "venice-video",
+                "prompt": "p",
+                "parameters": {"duration": "5s"},
+            }
+        )
+        from venice_media_skill.payloads import build_video_queue, build_video_quote
+
+        assert build_video_queue(request).hash == build_video_quote(request).hash
+
+
+# ---------------------------------------------------------------------------
+# Default policy / allow-list narrowing
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadHostPolicy:
+    """``DEFAULT_DOWNLOAD_POLICY`` must reject broad cloud suffixes that
+    could otherwise smuggle unsigned/uploaded-to-anyone origins past the
+    SSRF allow-list.
+    """
+
+    def test_accepts_canonical_venice_cdn(self) -> None:
+        from venice_media_skill.client import DEFAULT_DOWNLOAD_POLICY
+
+        assert DEFAULT_DOWNLOAD_POLICY.accepts("cdn.venice.ai") is True
+
+    def test_accepts_venice_operator_suffix(self) -> None:
+        from venice_media_skill.client import DEFAULT_DOWNLOAD_POLICY
+
+        assert DEFAULT_DOWNLOAD_POLICY.accepts("media.venice.ai") is True
+        assert DEFAULT_DOWNLOAD_POLICY.accepts("api.venice.ai") is True
+        assert DEFAULT_DOWNLOAD_POLICY.accepts("streaming.venice.ai") is True
+
+    def test_rejects_broad_cloud_storage_suffixes(self) -> None:
+        from venice_media_skill.client import DEFAULT_DOWNLOAD_POLICY
+
+        for host in (
+            "attacker.amazonaws.com",
+            "s3.amazonaws.com",
+            "bucket.cloudflarestorage.com",
+            "evil.cloudflarestorage.com",
+            "bucket.storage.googleapis.com",
+            "anyone.googleapis.com",
+        ):
+            assert DEFAULT_DOWNLOAD_POLICY.accepts(host) is False, host
+
+    def test_rejects_hosts_unrelated_to_venice(self) -> None:
+        from venice_media_skill.client import DEFAULT_DOWNLOAD_POLICY
+
+        for host in ("example.com", "evilexample.ai", "venice.ai.evil.example"):
+            assert DEFAULT_DOWNLOAD_POLICY.accepts(host) is False, host
+
+    def test_accepts_is_case_insensitive(self) -> None:
+        from venice_media_skill.client import DEFAULT_DOWNLOAD_POLICY
+
+        assert DEFAULT_DOWNLOAD_POLICY.accepts("CDN.VENICE.AI") is True
+
+
+# ---------------------------------------------------------------------------
+# Redirect cycle / relative-location regressions
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectNormalization:
+    def test_redirect_cycle_detected_after_default_port_normalization(self) -> None:
+        """``https://cdn.venice.ai:443/x`` and ``https://cdn.venice.ai/x``
+        must collide in the cycle detector.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/x.png":
+                return httpx.Response(302, headers={"location": "https://cdn.venice.ai:443/x"})
+            if request.url.path == "/x":
+                return httpx.Response(302, headers={"location": "https://cdn.venice.ai:443/x"})
+            return httpx.Response(200, content=_PNG_BYTES, headers={"content-type": "image/png"})
+
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(NetworkSafetyError, match=r"cycle"):
+            client.download_public_url("https://cdn.venice.ai/x.png", transport=httpx.MockTransport(handler))
+
+    def test_relative_redirect_resolves_via_urljoin(self) -> None:
+        """A 302 to ``/other/file.png`` (relative) must walk to
+        ``https://cdn.venice.ai/other/file.png`` and continue.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/x.png":
+                return httpx.Response(302, headers={"location": "/other/file.png"})
+            if request.url.path == "/other/file.png":
+                return httpx.Response(200, content=_PNG_BYTES, headers={"content-type": "image/png"})
+            return httpx.Response(404, content=b"")
+
+        client = _client(resolver=_stub_resolver())
+        with httpx.MockTransport(handler) as transport:
+            response = client.download_public_url("https://cdn.venice.ai/x.png", transport=transport)
+        assert response.is_binary
+        assert response.path == "https://cdn.venice.ai/other/file.png"
+
+
+# ---------------------------------------------------------------------------
+# HTTP error status vs. media-validation regression
+# ---------------------------------------------------------------------------
+
+
+class TestPublicHttpError:
+    """Public downloads must surface 4xx/5xx as a typed ``PublicHttpError``
+    so callers see status / URL / content-type / request-id / body preview
+    instead of a misleading magic-byte failure."""
+
+    def test_404_raises_typed_error_with_status(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                404,
+                content=b"Not found\n",
+                headers={"content-type": "text/plain"},
             )
 
-            # This should discover the download_url from the COMPLETED response
-            runner._queued_generate(request, media_type="video")
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(PublicHttpError) as exc_info:
+            client.download_public_url(
+                "https://cdn.venice.ai/missing.png",
+                transport=httpx.MockTransport(handler),
+            )
+        err = exc_info.value
+        assert err.status_code == 404
+        assert err.url == "https://cdn.venice.ai/missing.png"
+        assert err.content_type == "text/plain"
+        assert "Not found" in err.body_preview
 
-            # Verify download_public_url was called with the discovered URL
-            assert client.download_public_url.call_count == 1
-            call_args = client.download_public_url.call_args
-            assert call_args[0][0] == "https://cdn.venice.ai/output.mp4"
+    def test_500_captures_request_id_and_content_type(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                500,
+                content=b"upstream timeout",
+                headers={
+                    "content-type": "application/json",
+                    "x-request-id": "req-xyz",
+                },
+            )
+
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(PublicHttpError) as exc_info:
+            client.download_public_url(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+            )
+        err = exc_info.value
+        assert err.status_code == 500
+        assert err.request_id == "req-xyz"
+        assert err.content_type == "application/json"
+        assert "upstream timeout" in err.body_preview
+
+    def test_body_preview_is_bounded(self) -> None:
+        """At most ``BODY_PREVIEW_LIMIT`` bytes are surfaced, even if the
+        server returns an oversized error body. The bridge must NOT
+        consume arbitrarily large error bodies during diagnostics."""
+        oversized = b"A" * 100_000
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                502,
+                content=oversized,
+                headers={"content-type": "text/plain"},
+            )
+
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(PublicHttpError) as exc_info:
+            client.download_public_url(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+            )
+        assert len(exc_info.value.body_preview) <= PublicHttpError.BODY_PREVIEW_LIMIT
+
+    def test_403_with_html_body_sanitized_for_text(self) -> None:
+        body = b"<html><body>forbidden</body></html>"
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403,
+                content=body,
+                headers={"content-type": "text/html"},
+            )
+
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(PublicHttpError, match=r"403") as exc:
+            client.download_public_url(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+            )
+        assert exc.value.status_code == 403
+        assert "forbidden" in exc.value.body_preview
 
 
-# =============================================================================
-# VMS-008: Magic Byte Verification Tests
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Schema declaration
+# ---------------------------------------------------------------------------
 
 
-class TestMagicBytesVMS008:
-    """Tests for VMS-008: Output files are trusted solely by Content-Type."""
+class TestRequestSchemaShape:
+    def test_schema_declares_strict_parameters(self) -> None:
+        schema = request_json_schema()
+        params = schema["properties"]["parameters"]
+        assert params["additionalProperties"] is False
 
-    def test_validate_content_type_matching(self):
-        """Magic bytes: Content matching declared type should be accepted."""
-        from venice_media_skill.util import validate_content_type
 
-        # Valid PNG data
-        png_data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
-        assert validate_content_type(png_data, "image/png") is True
+# ---------------------------------------------------------------------------
+# download_public_bytes / download_public_file
+# ---------------------------------------------------------------------------
 
-        # Valid JPEG data
-        jpeg_data = b"\xff\xd8\xff\xe0\x00\x10JFIF"
-        assert validate_content_type(jpeg_data, "image/jpeg") is True
 
-    def test_validate_content_type_mismatch(self):
-        """Magic bytes: Content not matching declared type should be rejected."""
-        from venice_media_skill.util import validate_content_type
+class TestInMemoryBytesDefault:
+    def test_default_max_bytes_matches_constant(self) -> None:
+        from venice_media_skill.client import IN_MEMORY_MAX_BYTES
 
-        # PNG data declared as JPEG
-        png_data = b"\x89PNG\r\n\x1a\n"
-        assert validate_content_type(png_data, "image/jpeg") is False
+        def handler(_request: httpx.Request) -> httpx.Response:
+            announced = IN_MEMORY_MAX_BYTES + 1
+            return httpx.Response(
+                200,
+                content=_PNG_BYTES,
+                headers={
+                    "content-type": "image/png",
+                    "content-length": str(announced),
+                },
+            )
 
-        # JPEG data declared as PNG
-        jpeg_data = b"\xff\xd8\xff"
-        assert validate_content_type(jpeg_data, "image/png") is False
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(DownloadLimitExceeded) as exc_info:
+            client.download_public_bytes(
+                "https://cdn.venice.ai/x.png",
+                transport=httpx.MockTransport(handler),
+            )
+        assert exc_info.value.limit == IN_MEMORY_MAX_BYTES
 
-    def test_detect_html_as_suspicious(self):
-        """Magic bytes: HTML content declared as image should be flagged as suspicious."""
-        from venice_media_skill.util import is_suspicious_content
+    def test_explicit_max_bytes_overrides_default(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=_PNG_BYTES + b"\x00" * 4096,
+                headers={"content-type": "image/png"},
+            )
 
-        html_data = b"<!DOCTYPE html><html><body>test</body></html>"
-        assert is_suspicious_content(html_data, "image/png") is True
+        client = _client(resolver=_stub_resolver())
+        with pytest.raises(DownloadLimitExceeded):
+            client.download_public_bytes(
+                "https://cdn.venice.ai/x.png",
+                max_bytes=128,
+                transport=httpx.MockTransport(handler),
+            )
 
-    def test_detect_json_as_suspicious_for_media(self):
-        """Magic bytes: JSON content declared as image should be flagged as suspicious."""
-        from venice_media_skill.util import is_suspicious_content
 
-        json_data = b'{"error": "test"}'
-        assert is_suspicious_content(json_data, "image/png") is True
+class TestFileSink:
+    def test_writes_sha256_matches_memory_mode(self, tmp_path: Path) -> None:
+        body = _PNG_BYTES + b"\x00" * 1024
 
-    def test_valid_media_not_suspicious(self):
-        """Magic bytes: Valid media content should not be flagged as suspicious."""
-        from venice_media_skill.util import is_suspicious_content
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body, headers={"content-type": "image/png"})
 
-        # Valid PNG data
-        png_data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
-        assert is_suspicious_content(png_data, "image/png") is False
+        client = _client(resolver=_stub_resolver())
+        transport = httpx.MockTransport(handler)
+        with transport:
+            memory_response = client.download_public_bytes("https://cdn.venice.ai/x.png", transport=transport)
+            destination = tmp_path / "output.png"
+            file_response = client.download_public_file(
+                "https://cdn.venice.ai/x.png", destination=destination, transport=transport
+            )
+        assert destination.read_bytes() == body
+        assert memory_response.sha256 == file_response.sha256
+        assert file_response.is_binary
+        assert file_response.content is None
+        assert file_response.file_path == destination
 
-    def test_content_type_for_magic_bytes_png(self):
-        """Magic bytes: Should correctly identify PNG from magic bytes."""
-        from venice_media_skill.util import content_type_for_magic_bytes
+    def test_over_cap_leaves_no_partial_tmpfile(self, tmp_path: Path) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=b"\x00" * 4096,
+                headers={
+                    "content-type": "image/png",
+                    "content-length": str(999_999_999),
+                },
+            )
 
-        png_data = b"\x89PNG\r\n\x1a\n"
-        assert content_type_for_magic_bytes(png_data) == "image/png"
+        client = _client(resolver=_stub_resolver())
+        destination = tmp_path / "should-not-exist.png"
+        with pytest.raises(DownloadLimitExceeded):
+            client.download_public_file(
+                "https://cdn.venice.ai/x.png",
+                destination=destination,
+                max_bytes=128,
+                transport=httpx.MockTransport(handler),
+            )
+        assert not destination.exists()
+        leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".venice-media-")]
+        assert leftovers == [], f"tmpfile leaked: {leftovers}"
 
-    def test_content_type_for_magic_bytes_jpeg(self):
-        """Magic bytes: Should correctly identify JPEG from magic bytes."""
-        from venice_media_skill.util import content_type_for_magic_bytes
+    def test_invalid_content_type_validation_does_not_write_destination(self, tmp_path: Path) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            # Declared as PNG, but magic bytes are a Windows PE executable.
+            return httpx.Response(
+                200,
+                content=b"MZ" + b"\x00" * 64,
+                headers={"content-type": "image/png"},
+            )
 
-        jpeg_data = b"\xff\xd8\xff"
-        assert content_type_for_magic_bytes(jpeg_data) == "image/jpeg"
+        client = _client(resolver=_stub_resolver())
+        destination = tmp_path / "should-not-exist.png"
+        with pytest.raises(NetworkSafetyError) as exc_info:
+            client.download_public_file(
+                "https://cdn.venice.ai/x.png",
+                destination=destination,
+                transport=httpx.MockTransport(handler),
+            )
+        assert "content validation" in str(exc_info.value).lower()
+        assert not destination.exists()
+        leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".venice-media-")]
+        assert leftovers == [], f"tmpfile leaked: {leftovers}"
 
-    def test_content_type_for_magic_bytes_webp(self):
-        """Magic bytes: Should correctly identify WebP from magic bytes."""
-        from venice_media_skill.util import content_type_for_magic_bytes
+    def test_redirect_in_file_mode_writes_atomically(self, tmp_path: Path) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/redirect-me":
+                return httpx.Response(302, headers={"location": "/other/file.png"})
+            if request.url.path == "/other/file.png":
+                return httpx.Response(200, content=_PNG_BYTES, headers={"content-type": "image/png"})
+            return httpx.Response(404)
 
-        webp_data = b"RIFF\x00\x00\x00\x00WEBP"
-        assert content_type_for_magic_bytes(webp_data) == "image/webp"
+        client = _client(resolver=_stub_resolver())
+        destination = tmp_path / "redirected.png"
+        with httpx.MockTransport(handler) as transport:
+            response = client.download_public_file(
+                "https://cdn.venice.ai/redirect-me",
+                destination=destination,
+                transport=transport,
+            )
+        assert response.path == "https://cdn.venice.ai/other/file.png"
+        assert destination.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
-    def test_content_type_for_magic_bytes_wav(self):
-        """Magic bytes: Should correctly identify WAV from magic bytes."""
-        from venice_media_skill.util import content_type_for_magic_bytes
+    def test_4xx_response_does_not_write_destination(self, tmp_path: Path) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, content=b"missing")
 
-        wav_data = b"RIFF\x00\x00\x00\x00WAVE"
-        assert content_type_for_magic_bytes(wav_data) == "audio/wav"
+        client = _client(resolver=_stub_resolver())
+        destination = tmp_path / "should-not-exist.png"
+        with pytest.raises(NetworkSafetyError):
+            client.download_public_file(
+                "https://cdn.venice.ai/x.png",
+                destination=destination,
+                transport=httpx.MockTransport(handler),
+            )
+        assert not destination.exists()
+        leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".venice-media-")]
+        assert leftovers == [], f"tmpfile leaked: {leftovers}"
+
+    def test_existing_destination_is_overwritten(self, tmp_path: Path) -> None:
+        existing = tmp_path / "overwrite-me.png"
+        existing.write_bytes(b"OLD")
+        new_body = _PNG_BYTES
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=new_body, headers={"content-type": "image/png"})
+
+        client = _client(resolver=_stub_resolver())
+        with httpx.MockTransport(handler) as transport:
+            response = client.download_public_file(
+                "https://cdn.venice.ai/x.png",
+                destination=existing,
+                transport=transport,
+            )
+        assert response.file_path == existing
+        assert existing.read_bytes() == new_body

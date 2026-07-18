@@ -52,9 +52,7 @@ class ModelCatalog:
         self._write_cache(cache)
         return models
 
-    def get(
-        self, model_id: str, model_type: str = "all", *, refresh: bool = False
-    ) -> dict[str, Any] | None:
+    def get(self, model_id: str, model_type: str = "all", *, refresh: bool = False) -> dict[str, Any] | None:
         for model in self.list(model_type, refresh=refresh):
             if model.get("id") == model_id:
                 return model
