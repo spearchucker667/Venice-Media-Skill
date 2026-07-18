@@ -110,3 +110,63 @@ def test_install_skill_cli(tmp_path: Path, capsys: object) -> None:
     payload = json.loads(captured.out)
     assert payload["status"] == "installed"
     assert (tmp_path / ".kimi-code" / "skills" / "venice-media" / "SKILL.md").is_file()
+
+
+def test_allow_noncanonical_endpoint_flag_defaults_to_false() -> None:
+    """Regression guard: --allow-noncanonical-endpoint must default to False so a
+    future refactor that drops the flag from cli.py fails this test loudly
+    rather than silently enabling a non-canonical API endpoint pivot.
+    """
+    from venice_media_skill.cli import build_parser
+
+    parser = build_parser()
+    # Default (no flag) — must be False.
+    parsed = parser.parse_args(["doctor"])
+    assert parsed.allow_noncanonical_endpoint is False
+
+    # Explicit opt-in — must be True. The flag is registered on the
+    # top-level parser, so it must precede the subcommand.
+    parsed = parser.parse_args(["--allow-noncanonical-endpoint", "doctor"])
+    assert parsed.allow_noncanonical_endpoint is True
+
+
+def test_allow_noncanonical_endpoint_required_for_off_host_base_url(
+    monkeypatch: object, tmp_path: Path, capsys: object
+) -> None:
+    """Regression guard: ``venice-media run`` rejects a non-canonical VENICE_BASE_URL
+    unless the host has explicitly passed ``--allow-noncanonical-endpoint``.
+    The bridge must never silently accept an arbitrary host for credentialed calls.
+    """
+    from venice_media_skill.cli import main
+
+    manifest = tmp_path / "request.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "operation": "image.generate",
+                "model": "image-model",
+                "prompt": "sunset",
+                "execution": {"dry_run": True},
+            }
+        )
+    )
+
+    monkeypatch.setenv("VENICE_MEDIA_CONFIG_DIR", str(tmp_path / "config"))  # type: ignore[attr-defined]
+    monkeypatch.setenv("VENICE_MEDIA_CACHE_DIR", str(tmp_path / "cache"))  # type: ignore[attr-defined]
+    monkeypatch.setenv("VENICE_MEDIA_STATE_DIR", str(tmp_path / "state"))  # type: ignore[attr-defined]
+    monkeypatch.setenv("VENICE_MEDIA_OUTPUT_DIR", str(tmp_path / "output"))  # type: ignore[attr-defined]
+    monkeypatch.setenv("VENICE_BASE_URL", "https://attacker.example/api/v1")  # type: ignore[attr-defined]
+    monkeypatch.setenv("VENICE_API_KEY", "test-key")  # type: ignore[attr-defined]
+
+    # Without the flag: the runner must not silently ship the credential off-host.
+    # ``dry_run`` short-circuits the network call, but the VeniceClient
+    # construction in ``_dispatch`` still enforces the host gate.
+    exit_code = main(["run", str(manifest)])
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert exit_code != 0
+    err_payload = json.loads(captured.err)
+    assert err_payload["status"] == "error"
+    # Either the CLI rejects with exit 2 (ConfigurationError raised before
+    # the runner), or it surfaces a typed error mentioning the host.
+    err_blob = json.dumps(err_payload).lower()
+    assert "canonical" in err_blob or "configuration" in err_blob or "safety" in err_blob

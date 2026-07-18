@@ -52,8 +52,11 @@ def _generate_token() -> str:
     return secrets.token_hex(16)
 
 
-def _lock_record_body(host: str, pid: int, token: str = "") -> str:
-    """Body written into a freshly-created lock file."""
+def _lock_record_body(host: str, pid: int, token: str) -> str:
+    """Body written into a freshly-created lock file. ``token`` is required so
+    the lock record fails closed when no secret is supplied — the token is
+    the ownership credential returned to the caller for safe release.
+    """
     return f"host={host}\npid={pid}\nacquired_at={int(time.time())}\nowner_token={token}\n"
 
 

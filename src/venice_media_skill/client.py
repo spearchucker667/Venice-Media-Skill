@@ -185,7 +185,10 @@ class VeniceClient:
       host's resolved address once, but ``httpx`` re-resolves the same
       hostname on socket connect. Mitigated by the strict
       ``DEFAULT_DOWNLOAD_POLICY`` allow-list; full IP pinning via a
-      custom transport is future hardening (P1-1).
+      custom transport is future hardening (P1-1). See
+      ``docs/threat-model.md`` § "TOCTOU / DNS rebinding window" and
+      § "No IP pinning" for the documented mitigations and the
+      recorded open follow-up.
     - The public-download ``httpx.Client`` is created with
       ``trust_env=False`` so ``HTTP_PROXY`` / ``HTTPS_PROXY`` /
       ``NO_PROXY`` are ignored. Operators that need proxy support for

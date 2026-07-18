@@ -40,3 +40,5 @@ Thumbs.db
 .vscode/
 /docs/audits/*
 !/docs/audits/Venice_Media_Skill_Remediation_2026-07-18.md
+/.venv-audit
+.audit-evidence/baseline.txt

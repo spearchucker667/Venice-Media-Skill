@@ -746,3 +746,77 @@ def test_consent_block_attached_only_when_approval_matches(tmp_path: Path) -> No
     # approval's payload_hash is unrelated to the current request.
     queue_body = client.calls[-1]["json"]
     assert "consents" not in queue_body
+
+
+def test_consent_block_absent_when_no_approval_stored(tmp_path: Path) -> None:
+    """F-04-doc regression guard: when no consent approval is stored at all,
+    the runner must never set ``consents.seedance`` on the queue body even if
+    the model is a Seedance model with the face-consent attestation. The
+    provider's 409 needs_consent response is the only signal that triggers
+    re-submission, and that resend path is gated by ``runner.py:280``.
+
+    A future refactor that drops the ``if consent_block is not None`` check
+    would auto-resubmit a Seedance generation without explicit user
+    consent — a critical safety violation. This test fails loudly in that
+    regression case.
+    """
+    consent_store = ConsentStore(tmp_path / "consent_approvals.json")
+    # Empty store: no challenge, no approval.
+
+    client = FakeClient(
+        [
+            # Quote succeeds (cost is acknowledged by the runner).
+            ApiResponse(200, "application/json", {}, json_data={"quote": 1.0}),
+            # Queue call returns 409 needs_consent on the FIRST attempt.
+            ApiResponse(
+                409,
+                "application/json",
+                {},
+                json_data={
+                    "error": {"code": "needs_consent", "message": "required"},
+                    "consent_flow": "seedance",
+                    "consent": {"policy_text": "exact policy"},
+                },
+            ),
+        ]
+    )
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "seedance-2-0-image-to-video",
+            "prompt": "A person walks across the bridge.",
+            "parameters": {"duration": "5s"},
+            "inputs": {"image": _PNG_data_url_safe(tmp_path)},
+            "execution": {"quote_first": False, "wait": False},
+        }
+    )
+    runner = make_runner(
+        tmp_path,
+        client,
+        consent_store=consent_store,
+        quote_store=_seed_quote(tmp_path, request_obj),
+    )
+    result = runner.run(request_obj)
+    # The runner must surface consent_required and capture the challenge.
+    assert result["status"] == "consent_required"
+    # The single on-wire queue call must NOT contain a consents block.
+    queue_calls = [c for c in client.calls if c["path"].endswith("/video/queue")]
+    assert queue_calls, "expected at least one POST /video/queue call"
+    queue_body = queue_calls[-1]["json"]
+    assert "consents" not in queue_body, (
+        "Seedance face-consent was auto-attached on the first queue call "
+        "without a stored user approval — this is a regression of the "
+        "single-line gate at runner.py:280."
+    )
+    # A challenge must have been recorded for the host's review path.
+    challenge_id = result["challenge_id"]
+    assert consent_store.load_challenge(challenge_id) is not None
+
+
+def _PNG_data_url_safe(tmp_path: Path) -> str:
+    """Helper: write a valid PNG and return its file path so the runner
+    accepts it as a local media input (no re-encoding to data: URLs).
+    """
+    png_path = tmp_path / "image.png"
+    png_path.write_bytes(_PNG)
+    return str(png_path)

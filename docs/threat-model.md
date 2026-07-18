@@ -408,6 +408,8 @@ The bridge follows a **permit-by-allow-list** strategy rather than IP pinning. T
 
 `_enforce_safe_target()` performs a `_resolve_safely()` lookup and rejects private / loopback / link-local / reserved / metadata IPs. The hop then issues its HTTP request, and `httpx` re-resolves the hostname when it opens the socket. An attacker who can flip the answer between the safety check and connect can land on a different IP than the one that was validated.
 
+**Source cross-reference:** this window is also documented inline at `src/venice_media_skill/client.py` in the `VeniceClient` class docstring (~line 184) and once more at `src/venice_media_skill/client.py` in `_request_preserving_consent` / `download_public_url`. Both anchors point back here so an auditor reading either side can trace the mitigation surface.
+
 **What protects us today:** the host allow-list is narrow (`api.venice.ai` for authenticated calls; `cdn.venice.ai`, `venice.ai`, `storage.googleapis.com`, `r2.cloudflarestorage.com`, `media.venice.ai`, plus the `.venice.ai` operator suffix for downloads) and every redirect is re-validated against it.
 
 **What does not protect us today:** a published URL that resolves to attacker-controlled infrastructure outside the allow-list. Until IP pinning through a custom transport lands (open follow-up), the bridge trusts the allow-list to enumerate Venice's authoritative surface and trusts DNS to match the request URL to that surface.

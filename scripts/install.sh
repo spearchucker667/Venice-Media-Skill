@@ -120,7 +120,7 @@ copy_skill() {
   local parent staging backup metadata timestamp suffix
   parent="$(dirname "$destination")"
   staging="$(mktemp -d "$parent/.venice-media.staging.XXXXXX")"
-  cp -R "$ROOT/skills/venice-media/." "$staging/"
+  cp -RL "$ROOT/skills/venice-media/." "$staging/"
   test -f "$staging/SKILL.md"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   suffix="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
