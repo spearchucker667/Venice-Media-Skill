@@ -197,7 +197,7 @@ class JobStore:
             "artifact": None,
             "last_response": None,
             "download_url_display": None,
-            "download_url_secret_ref": None,
+            "download_url_secret_ref": None,  # nosec B105 - key name, not a credential
         }
         self._write(queue_id, record)
         return record
