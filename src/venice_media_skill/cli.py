@@ -30,6 +30,7 @@ from .errors import (
     ConsentApprovalMissing,
     ConsentApprovalRequired,
     ConsentRequired,
+    DurableQueueWriteFailed,
     NetworkSafetyError,
     PayloadValidationError,
     QuoteApprovalMismatch,
@@ -179,6 +180,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=sys.stderr,
         )
         return 6
+    except DurableQueueWriteFailed as exc:
+        # Venice accepted a paid queue but the local durable record
+        # could not be written. The runner does NOT auto-resubmit; the
+        # operator must surface ``queue_id`` in their UI and run a
+        # retrieve command. Re-approving for the same payload hash on
+        # a different manifest would create a SECOND paid submission,
+        # so the next_step reminds the operator to recover via queue_id
+        # rather than re-approve.
+        _emit(
+            {
+                "status": "error",
+                "error_type": "durable_queue_write_failed",
+                "operation": exc.operation,
+                "model": exc.model,
+                "queue_id": exc.queue_id,
+                "media_type": exc.media_type,
+                "cause": exc.cause,
+                "next_step": (
+                    f"Venice accepted the paid {exc.operation} request but the local "
+                    f"durable record could not be written. Recover by running a "
+                    f"manifest with operation={exc.media_type}.retrieve, model={exc.model!r}, "
+                    f"parameters.queue_id={exc.queue_id!r}. The runner will NOT "
+                    f"auto-resubmit; re-approving the same quote would risk a "
+                    f"second paid submission."
+                ),
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 5
     except ConsentRequired as exc:
         _emit(
             {
@@ -202,6 +233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "error",
                 "error_type": "network_safety",
                 "url": exc.url,
+                "url_sha256": exc.url_sha256,
+                "query_redacted": exc.query_redacted,
                 "reason": exc.reason,
                 "resolved_ip": exc.resolved_ip,
             },
