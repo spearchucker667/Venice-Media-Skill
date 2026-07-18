@@ -762,9 +762,10 @@ def _validate_api_path(path: str) -> str:
     The authenticated :py:meth:`VeniceClient.request` only accepts absolute
     paths under the configured ``base_url``.  HTTPX will accept an absolute
     URL, a scheme-relative URL (``//evil.example/foo``), or a path-only
-    string — and would forward the ``Authorization`` Bearer header to the
+    string — and would forward the ``Authorization`` ****** to the
     resulting host.  We refuse anything except an absolute path that begins
-    with a single ``/`` and contains no scheme, netloc, fragment, or query.
+    with a single ``/`` and contains no scheme, netloc, fragment, query,
+    or percent-encoded traversal segment.
     """
     if not isinstance(path, str) or not path:
         raise NetworkSafetyError(
@@ -777,17 +778,28 @@ def _validate_api_path(path: str) -> str:
             reason="scheme-relative URLs are not permitted on authenticated requests",
         )
     if not path.startswith("/"):
-        # An absolute or relative-without-leading-slash URL means the caller
-        # is trying to redirect the request away from ``base_url``.
         raise NetworkSafetyError(
             url=path,
             reason="authenticated request path must begin with '/'",
         )
     parsed = urlparse(path)
-    if parsed.scheme or parsed.netloc or parsed.params.startswith("//"):
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or parsed.params.startswith("//"):
         raise NetworkSafetyError(
             url=path,
-            reason="authenticated request path must not contain a scheme, host, or netloc",
+            reason=("authenticated request path must not contain a scheme, host, netloc, query, or fragment"),
+        )
+    lower = path.lower()
+    for bad in ("..", "%2e", "%2f", "%5c"):
+        if bad in lower:
+            raise NetworkSafetyError(
+                url=path,
+                reason=f"authenticated request path must not contain '{bad}' segments",
+            )
+    collapsed = posixpath.normpath(parsed.path)
+    if not collapsed.startswith("/") or collapsed.startswith("//"):
+        raise NetworkSafetyError(
+            url=path,
+            reason=("authenticated request path escapes the API root via dot-segments"),
         )
     return path
 

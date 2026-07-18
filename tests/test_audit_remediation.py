@@ -720,3 +720,47 @@ def test_cur013_claim_release_restores_approval_on_needs_consent(tmp_path: Path)
     runner._release_claims(claim)
     assert consent.approval_for(payload_hash) is not None
     client.close()
+
+
+def test_cur013_authenticated_path_rejects_qmark_frag_dotseg_and_encoded_traversal() -> None:
+    """P2-7: ``_validate_api_path`` rejects query, fragment, raw ``..``, and
+    percent-encoded traversal segments on the authenticated client.
+
+    Regression target for VMS-CUR-013: a path that *escapes* / confuses
+    ``urlparse`` must never reach ``httpx`` with the ****** attached.
+    """
+    # Query / fragment must be refused even when the rest looks legitimate.
+    for bad in (
+        "/models?api_key=leak",
+        "/models#fragment",
+        "/image/generate?x=1&y=2",
+        "/image/generate#frag",
+    ):
+        with pytest.raises(NetworkSafetyError):
+            _validate_api_path(bad)
+    # Raw ``..`` traversal segments are refused.
+    for bad in (
+        "/models/../admin",
+        "/image/../private",
+        "/../../etc/passwd",
+        "/models/..",
+    ):
+        with pytest.raises(NetworkSafetyError):
+            _validate_api_path(bad)
+    # Percent-encoded dot / slash / backslash are refused (case-insensitive).
+    for bad in (
+        "/image/%2E%2E/generate",
+        "/image/%2e%2e/generate",
+        "/image/%2F%2F/generate",
+        "/image/%2f%2f/generate",
+        "/image/%5C%5C/generate",
+        "/image/%5c%5c/generate",
+        "/image/%2e/generate",
+        "/image/foo%2f..%2fbar",
+    ):
+        with pytest.raises(NetworkSafetyError):
+            _validate_api_path(bad)
+    # Sanity: legitimate API paths still pass.
+    assert _validate_api_path("/models") == "/models"
+    assert _validate_api_path("/image/generate") == "/image/generate"
+    assert _validate_api_path("/chat/completions") == "/chat/completions"
