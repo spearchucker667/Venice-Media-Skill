@@ -85,6 +85,8 @@ def _check_skill_root(canonical_skill: Path, mirrors: tuple[Path, ...], relpaths
 
 def main() -> int:
     reference_relpaths = (
+        "AI Media Generation Reference Manual.md",
+        "image_helper.md",
         "venice-openapi.yaml",
         "venice-api-llms.md",
         "seedance-2-0-api-guide.md",

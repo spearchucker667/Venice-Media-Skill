@@ -49,6 +49,10 @@ If the command is missing, stop and tell the user to install this repository. If
 
 The installed Skill includes a pinned Venice OpenAPI snapshot at `references/venice-openapi.yaml` and a capability index at `references/venice-api-llms.md`. Use them to verify endpoint fields and response shapes. Treat the live `GET /models` response as authoritative for the currently available model IDs, pricing, traits, and model-specific constraints. Never load the entire Swagger file into context when a targeted search for the relevant endpoint or schema is sufficient.
 
+For production planning, prompting, review, refinement, and delivery across image, video, speech, sound, and music workflows, consult `references/AI Media Generation Reference Manual.md` as needed. Read only the sections relevant to the requested operation and intended deliverable.
+
+For image enhancement, restoration, or upscale work where source identity, composition, text, logos, alpha, anatomy, or fine detail must remain stable, consult `references/image_helper.md` before planning or executing the request. Treat its preservation rules and quality checks as additional workflow guidance; the bridge's security, consent, quote, reserved-parameter, and live-model-discovery requirements remain authoritative.
+
 ## Plan before executing
 
 Map the request to one operation:
