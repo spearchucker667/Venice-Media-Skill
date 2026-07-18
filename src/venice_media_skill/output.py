@@ -19,11 +19,18 @@ from .client import ApiResponse
 from .errors import ContentValidationError, OutputError
 from .util import (
     decode_data_url,
+    detected_content_type,
     extension_for_content_type,
     fast_validate_content_type,
     timestamp_slug,
     utc_now_iso,
 )
+
+# Keys whose value, if a base64 string, is *semantically* a media artifact.
+# MIME type is detected from the decoded magic bytes, not asserted from the
+# key name — a JPEG returned under "b64_json" must be recognised as image/jpeg,
+# not coerced to image/png.
+_BASE64_MEDIA_KEYS: frozenset[str] = frozenset({"b64_json", "base64", "image", "audio", "video"})
 
 # How many bytes to read from the start of a file-path blob to validate
 # its declared ``Content-Type`` against the on-disk magic-byte signature.
@@ -355,27 +362,7 @@ def _extract_json_blobs(payload: Any) -> list[_Blob]:
     if not isinstance(payload, dict):
         return results
     for key, value in payload.items():
-        if key in {"b64_json", "base64"} and isinstance(value, str):
-            if _looks_like_base64(value):
-                media_type = _media_type_for_key(key)
-                try:
-                    blob = base64.b64decode(value, validate=True)
-                except ValueError as exc:
-                    raise ContentValidationError(
-                        declared=media_type,
-                        detected=None,
-                        reason="invalid base64 payload",
-                    ) from exc
-                fast_validate_content_type(blob, media_type)
-                results.append(
-                    _Blob(
-                        content_type=media_type,
-                        content=blob,
-                        sha256=_sha256(blob),
-                        observed=len(blob),
-                    )
-                )
-        elif key in {"image", "audio", "video"} and isinstance(value, str):
+        if key in _BASE64_MEDIA_KEYS and isinstance(value, str):
             if value.startswith("data:"):
                 mime, blob = decode_data_url(value)
                 fast_validate_content_type(blob, mime)
@@ -387,20 +374,31 @@ def _extract_json_blobs(payload: Any) -> list[_Blob]:
                         observed=len(blob),
                     )
                 )
-            elif _looks_like_base64(value):
-                media_type = _media_type_for_key(key)
+                continue
+            if _looks_like_base64(value):
                 try:
                     blob = base64.b64decode(value, validate=True)
                 except ValueError as exc:
                     raise ContentValidationError(
-                        declared=media_type,
+                        declared="",
                         detected=None,
                         reason="invalid base64 payload",
                     ) from exc
-                fast_validate_content_type(blob, media_type)
+                detected = detected_content_type(blob)
+                if detected is None:
+                    raise ContentValidationError(
+                        declared="",
+                        detected=None,
+                        reason=(
+                            f"base64 payload under '{key}' did not match a known "
+                            "media signature; refusing to assert a content type "
+                            "from the key name"
+                        ),
+                    )
+                fast_validate_content_type(blob, detected)
                 results.append(
                     _Blob(
-                        content_type=media_type,
+                        content_type=detected,
                         content=blob,
                         sha256=_sha256(blob),
                         observed=len(blob),
@@ -430,10 +428,6 @@ def _looks_like_base64(value: str) -> bool:
     if not re.fullmatch(r"[A-Za-z0-9+/=]*", value):
         return False
     return bool(re.search(r"[A-Za-z0-9]", value))
-
-
-def _media_type_for_key(key: str) -> str:
-    return {"audio": "audio/mpeg", "video": "video/mp4"}.get(key, "image/png")
 
 
 def _sha256(data: bytes) -> str:
