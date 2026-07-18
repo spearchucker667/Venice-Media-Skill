@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import socket
 import unittest.mock
 from collections.abc import Iterator, Sequence
@@ -996,3 +997,110 @@ class TestFileSink:
             )
         assert response.file_path == existing
         assert existing.read_bytes() == new_body
+
+
+# ---------------------------------------------------------------------------
+# P1-04: signed URL leakage via error types must be plaintext-blocked.
+# ---------------------------------------------------------------------------
+
+
+def test_network_safety_error_redacts_query_and_fragment() -> None:
+    signed = "https://cdn.venice.ai/out.mp4?token=secretA&sig=secretB&signature=secretC&Expires=1700000000&KeyId=keyid1"
+    err = NetworkSafetyError(url=signed, reason="rejected by allow-list")
+    for needle in ("secretA", "secretB", "secretC", "keyid1"):
+        assert needle not in str(err), f"signature fragment leaked: {needle}"
+        assert needle not in err.url, f"signature fragment leaked into url: {needle}"
+    assert err.query_redacted is True
+    assert err.url.startswith("https://cdn.venice.ai/out.mp4")
+    assert "[redacted]" in err.url or "[…redacted]" in err.url
+    # hash is stable + deterministic for correlation purposes.
+    import hashlib
+
+    assert err.url_sha256 == hashlib.sha256(signed.encode("utf-8")).hexdigest()
+
+
+def test_network_safety_error_keeps_unsigned_url_unchanged() -> None:
+    plain = "https://cdn.venice.ai/public/banner.png"
+    err = NetworkSafetyError(url=plain, reason="not an issue")
+    assert err.url == plain
+    assert err.query_redacted is False
+    assert err.url_sha256  # still computed for parity
+
+
+def test_public_http_error_body_preview_redacts_embedded_signed_urls() -> None:
+    body = "see <https://cdn.venice.ai/out.mp4?token=secretA&sig=secretB> for upstream evidence"
+    err = PublicHttpError(
+        url="https://cdn.venice.ai/path?token=topsecret&sig=topsig",
+        status_code=502,
+        message="bad gateway",
+        body_preview=body,
+    )
+    for needle in ("secretA", "secretB", "topsecret", "topsig"):
+        assert needle not in err.body_preview, f"{needle} leaked into body_preview"
+        assert needle not in err.url
+    # The path (no signing) is still surfaced.
+    assert "cdn.venice.ai" in err.body_preview
+    assert "cdn.venice.ai" in err.url
+
+
+def test_download_limit_exceeded_inherits_url_redaction() -> None:
+    err = DownloadLimitExceeded(
+        url="https://cdn.venice.ai/out.mp4?token=leakthis",
+        limit=1024,
+        observed=4096,
+    )
+    assert "leakthis" not in str(err)
+    assert "leakthis" not in err.url
+    assert err.limit == 1024
+    assert err.observed == 4096
+
+
+def test_cli_network_safety_envelope_includes_redaction_metadata(
+    tmp_path: Path,
+) -> None:
+    """A signed URL hitting the network_safety exit code must surface
+    ``url_sha256`` + ``query_redacted`` so logs are joinable across
+    call sites without ever carrying the live token.
+    """
+    from venice_media_skill.cli import main
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"operation": "image.generate", "model": "m", "prompt": "h"}',
+        encoding="utf-8",
+    )
+    stderr_path = tmp_path / "stderr.txt"
+
+    stub_runner = unittest.mock.MagicMock()
+    stub_runner.run.side_effect = NetworkSafetyError(
+        url="https://cdn.venice.ai/out.mp4?token=topsecret&sig=topsig",
+        reason="rejected by allow-list",
+    )
+
+    with (
+        unittest.mock.patch(
+            "venice_media_skill.cli.MediaRunner",
+            return_value=stub_runner,
+        ),
+        unittest.mock.patch("sys.stderr", open(stderr_path, "w", encoding="utf-8")),
+        unittest.mock.patch.dict(
+            "os.environ",
+            {
+                "VENICE_API_KEY": "test-key",
+                "VENICE_MEDIA_CONFIG_DIR": str(tmp_path),
+                "VENICE_MEDIA_OUTPUT_DIR": str(tmp_path),
+            },
+        ),
+    ):
+        exit_code = main(["--compact", "run", str(manifest)])
+
+    assert exit_code == 7
+    blob = stderr_path.read_text(encoding="utf-8")
+    lines = [line for line in blob.splitlines() if line.lstrip().startswith("{")]
+    assert lines, "no JSON envelope found in stderr"
+    parsed = json.loads(lines[-1])
+    assert parsed["error_type"] == "network_safety"
+    for needle in ("topsecret", "topsig"):
+        assert needle not in parsed["url"], f"{needle} leaked into CLI envelope"
+    assert parsed["query_redacted"] is True
+    assert len(parsed["url_sha256"]) == 64
