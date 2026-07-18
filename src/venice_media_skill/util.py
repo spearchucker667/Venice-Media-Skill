@@ -124,8 +124,17 @@ def normalize_media_input(value: str, *, max_bytes: int = 50 * 1024 * 1024) -> s
     if value.startswith(("http://", "https://")):
         return value
     if value.startswith("data:"):
-        # Validate decoded bytes; if declared MIME is suspect, reject.
+        # Check encoded length before decoding to bound memory use.
+        if len(value) > 50 * 1024 * 1024:
+            raise RequestValidationError(
+                f"Base64 data URL is {len(value)} bytes, exceeding the bridge limit; use a public URL instead."
+            )
         mime, blob = decode_data_url(value)
+        if len(blob) > max_bytes:
+            raise RequestValidationError(
+                f"Decoded data URL is {len(blob)} bytes, exceeding the {max_bytes}-byte limit; "
+                "use a public URL instead."
+            )
         fast_validate_content_type(blob, mime)
         return value
     return path_to_data_url(value, max_bytes=max_bytes)
@@ -342,14 +351,16 @@ def fast_validate_content_type(data: bytes, declared: str) -> None:
                 )
             return
         if normalized == "audio/opus":
-            if not data.startswith(b"OpusHead"):
-                raise ContentValidationError(
-                    declared=normalized,
-                    detected=detected,
-                    sha256=sha,
-                    reason="missing OpusHead packet",
-                )
-            return
+            if data.startswith(b"OpusHead"):
+                return
+            if data.startswith(b"OggS") and b"OpusHead" in data[:65536]:
+                return
+            raise ContentValidationError(
+                declared=normalized,
+                detected=detected,
+                sha256=sha,
+                reason="missing OpusHead packet",
+            )
         if normalized == "audio/ogg":
             if not data.startswith(b"OggS"):
                 raise ContentValidationError(

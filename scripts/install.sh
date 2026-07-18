@@ -63,29 +63,78 @@ mkdir -p "$INSTALL_ROOT" "$BIN_HOME"
 if [[ ! -x "$VENV/bin/python" ]]; then
   "$PYTHON" -m venv "$VENV"
 fi
-"$VENV/bin/python" -m pip install --upgrade pip
-"$VENV/bin/python" -m pip install --upgrade "$ROOT"
+"$VENV/bin/python" -m pip install --upgrade pip >/dev/null
+"$VENV/bin/python" -m pip install --upgrade "$ROOT" >/dev/null
 
-cat > "$BIN_HOME/venice-media" <<LAUNCHER
+LAUNCHER="$BIN_HOME/venice-media"
+LAUNCHER_STAGING="$LAUNCHER.staging.$$"
+cat > "$LAUNCHER_STAGING" <<LAUNCHER
 #!/usr/bin/env bash
 exec "$VENV/bin/venice-media" "\$@"
 LAUNCHER
-chmod 0755 "$BIN_HOME/venice-media"
+chmod 0755 "$LAUNCHER_STAGING"
+mv -f "$LAUNCHER_STAGING" "$LAUNCHER"
+
+refuse_if_destination_invalid() {
+  local destination="$1"
+  if [[ -L "$destination" ]]; then
+    echo "Refusing to install: destination is a symlink: $destination" >&2
+    exit 1
+  fi
+  if [[ -e "$destination" && ! -d "$destination" ]]; then
+    echo "Refusing to install: destination is not a directory: $destination" >&2
+    exit 1
+  fi
+  local parent
+  parent="$(dirname "$destination")"
+  while [[ -n "$parent" && "$parent" != "/" ]]; do
+    if [[ -L "$parent" ]]; then
+      echo "Refusing to install: ancestor is a symlink: $parent" >&2
+      exit 1
+    fi
+    parent="$(dirname "$parent")"
+  done
+}
+
+refuse_if_orphan_backup() {
+  local destination="$1"
+  local parent
+  parent="$(dirname "$destination")"
+  if [[ ! -d "$parent" ]]; then
+    return
+  fi
+  local matches
+  matches="$(find -L "$parent" -maxdepth 1 -mindepth 1 -name ".$(basename "$destination").rollback-*" -print -quit 2>/dev/null || true)"
+  if [[ -n "$matches" ]]; then
+    echo "Refusing to install: previous run left an unrecovered backup near $destination" >&2
+    echo "Inspect and either remove or restore: $matches" >&2
+    exit 1
+  fi
+}
 
 copy_skill() {
   local destination="$1"
+  refuse_if_destination_invalid "$destination"
+  refuse_if_orphan_backup "$destination"
   mkdir -p "$(dirname "$destination")"
-  local staging
-  staging="$(mktemp -d "$(dirname "$destination")/.venice-media.XXXXXX")"
+  local parent staging backup metadata timestamp suffix
+  parent="$(dirname "$destination")"
+  staging="$(mktemp -d "$parent/.venice-media.staging.XXXXXX")"
   cp -R "$ROOT/skills/venice-media/." "$staging/"
   test -f "$staging/SKILL.md"
-  local backup="${destination}.rollback"
-  rm -rf "$backup"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  suffix="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  backup="$parent/.$(basename "$destination").rollback-${timestamp}-${suffix}"
+  metadata="${backup}.metadata.json"
+  cat > "$metadata" <<META
+{"schema":"vms-backup-v1","destination":"$destination","created_at":"$timestamp","pid":$$}
+META
   if [[ -e "$destination" ]]; then mv "$destination" "$backup"; fi
   if mv "$staging" "$destination"; then
-    rm -rf "$backup"
+    rm -rf "$backup" "$metadata"
   else
-    if [[ -e "$backup" ]]; then mv "$backup" "$destination"; fi
+    if [[ -e "$backup" && ! -e "$destination" ]]; then mv "$backup" "$destination"; fi
+    rm -f "$metadata"
     exit 1
   fi
 }

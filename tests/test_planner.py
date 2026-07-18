@@ -64,7 +64,8 @@ def test_image_plan_uses_model_constraints() -> None:
         "parameters.variants",
         "parameters.format",
     }.issubset(fields(result))
-    assert "parameters.width_height" not in fields(result)
+    assert "parameters.width" not in fields(result)
+    assert "parameters.height" not in fields(result)
     # P1-10 default redaction: provider-default safe fields live under
     # ``defaults.parameters``; execution policies live under
     # ``defaults.execution``.
@@ -94,10 +95,13 @@ def test_image_plan_falls_back_to_width_height() -> None:
     result = Planner(catalog).plan(  # type: ignore[arg-type]
         "image.generate", model="pixel-image", prompt="sunset"
     )
-    width_question = next(
-        question for question in result["questions"] if question["field"] == "parameters.width_height"
-    )
-    assert "16" in width_question["question"]
+    fields_ = fields(result)
+    assert "parameters.width" in fields_
+    assert "parameters.height" in fields_
+    width_q = next(q for q in result["questions"] if q["field"] == "parameters.width")
+    assert "16" in width_q["question"]
+    height_q = next(q for q in result["questions"] if q["field"] == "parameters.height")
+    assert "16" in height_q["question"]
 
 
 def test_edit_upscale_and_background_plans() -> None:
@@ -105,7 +109,7 @@ def test_edit_upscale_and_background_plans() -> None:
     edit = Planner(edit_catalog).plan(  # type: ignore[arg-type]
         "image.edit", model="edit-1", prompt="remove tree"
     )
-    assert {"inputs.images", "parameters.aspect_ratio", "parameters.resolution"}.issubset(fields(edit))
+    assert {"inputs.image", "parameters.aspect_ratio", "parameters.resolution"}.issubset(fields(edit))
 
     upscale = Planner(None).plan("image.upscale")
     assert {"inputs.image", "parameters.scale", "parameters.creativity"}.issubset(fields(upscale))

@@ -1356,7 +1356,8 @@ def test_build_audio_queue_and_quote_match() -> None:
     )
     queue = build_audio_queue(request)
     quote = build_audio_quote(request)
-    assert queue.hash == quote.hash
+    # Queue body must NOT carry character_count (quote-only).
+    assert "character_count" not in queue.payload
     # Quote schema is exactly {model, duration_seconds, character_count};
     # queue-only fields like ``lyrics_prompt`` or ``force_instrumental``
     # must never appear in the quote body.
@@ -1364,6 +1365,8 @@ def test_build_audio_queue_and_quote_match() -> None:
     assert "force_instrumental" not in quote.payload
     assert "lyrics_prompt" not in quote.payload
     assert "duration_seconds" in quote.payload
+    # Hashes legitimately differ because character_count is quote-only.
+    assert queue.hash != quote.hash
 
 
 def test_reserved_parameters_constant() -> None:

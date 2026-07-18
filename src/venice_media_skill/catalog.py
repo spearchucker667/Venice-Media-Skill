@@ -37,19 +37,28 @@ class ModelCatalog:
     def list(self, model_type: str = "all", *, refresh: bool = False) -> list[dict[str, Any]]:
         if model_type not in _MODEL_TYPES:
             raise ValueError(f"Unsupported model type: {model_type}")
-        cached = None if refresh else self._read_cache()
-        if cached is not None and model_type in cached.get("by_type", {}):
-            value = cached["by_type"][model_type]
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+        if not refresh:
+            cached = self._read_cache()
+            if cached is not None:
+                fpt = cached.get("fetched_per_type", {})
+                fetched = fpt.get(model_type)
+                if isinstance(fetched, (int, float)) and time.time() - float(fetched) <= self.cache_ttl_seconds:
+                    value = cached.get("by_type", {}).get(model_type)
+                    if isinstance(value, list):
+                        return [item for item in value if isinstance(item, dict)]
+                cached = None  # fresh fetch needed
+        else:
+            cached = None
         payload = self.client.get_json("/models", params={"type": model_type})
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise OutputError("GET /models returned an unexpected response shape.")
         models = [item for item in payload["data"] if isinstance(item, dict)]
-        cache = cached or {"fetched_at": time.time(), "by_type": {}}
+        cache: dict[str, Any] = cached if isinstance(cached, dict) else {"by_type": {}, "fetched_per_type": {}}
         if not isinstance(cache.get("by_type"), dict):
             cache["by_type"] = {}
-        cache["fetched_at"] = time.time()
+        if not isinstance(cache.get("fetched_per_type"), dict):
+            cache["fetched_per_type"] = {}
+        cache["fetched_per_type"][model_type] = time.time()
         cache["by_type"][model_type] = models
         self._write_cache(cache)
         return models
@@ -73,10 +82,17 @@ class ModelCatalog:
             return None
         if not isinstance(payload, dict):
             return None
-        fetched_at = payload.get("fetched_at")
-        if not isinstance(fetched_at, (int, float)):
-            return None
-        if time.time() - float(fetched_at) > self.cache_ttl_seconds:
+        # Migrate from v1 global fetched_at to v2 per-type timestamps.
+        fpt = payload.get("fetched_per_type")
+        if not isinstance(fpt, dict):
+            global_fetched = payload.get("fetched_at")
+            if isinstance(global_fetched, (int, float)):
+                fpt = {}
+                for t in _MODEL_TYPES:
+                    if t in payload.get("by_type", {}):
+                        fpt[t] = float(global_fetched)
+                payload["fetched_per_type"] = fpt
+        if not isinstance(fpt, dict):
             return None
         return payload
 
@@ -84,15 +100,27 @@ class ModelCatalog:
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         _acquire_lock(self.cache_file)
         try:
-            current = self._read_cache() or {"fetched_at": payload.get("fetched_at"), "by_type": {}}
+            current = self._read_cache() or {"by_type": {}, "fetched_per_type": {}}
             current_by_type = current.get("by_type")
             payload_by_type = payload.get("by_type")
+            current_fpt = current.get("fetched_per_type", {})
+            payload_fpt = payload.get("fetched_per_type", {})
             if not isinstance(current_by_type, dict):
                 current_by_type = {}
+            if isinstance(payload_fpt, dict):
+                current_fpt.update(payload_fpt)
             if isinstance(payload_by_type, dict):
-                current_by_type.update(payload_by_type)
+                for key, value in payload_by_type.items():
+                    fpt = current_fpt.get(key, 0)
+                    if (
+                        isinstance(fpt, (int, float))
+                        and time.time() - float(fpt) <= self.cache_ttl_seconds
+                        and key in current_by_type
+                    ):
+                        continue
+                    current_by_type[key] = value
             current["by_type"] = current_by_type
-            current["fetched_at"] = payload.get("fetched_at", time.time())
+            current["fetched_per_type"] = current_fpt
             atomic_write_text(self.cache_file, json.dumps(current, indent=2, sort_keys=True) + "\n")
         finally:
             _release_lock(self.cache_file)

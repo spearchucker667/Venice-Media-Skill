@@ -145,10 +145,18 @@ def _questions_for_model(
             divisor = constraints.get("widthHeightDivisor", 8)
             questions.append(
                 _question(
-                    "parameters.width_height",
+                    "parameters.width",
                     False,
-                    f"What width and height? Values should be divisible by {divisor}.",
-                    default={"width": 1024, "height": 1024},
+                    f"What width? Values should be divisible by {divisor}.",
+                    default=1024,
+                )
+            )
+            questions.append(
+                _question(
+                    "parameters.height",
+                    False,
+                    f"What height? Values should be divisible by {divisor}.",
+                    default=1024,
                 )
             )
         if resolutions:
@@ -194,13 +202,22 @@ def _questions_for_model(
             ]
         )
     elif operation in {"image.edit", "image.multi_edit"}:
-        questions.append(
-            _question(
-                "inputs.images",
-                True,
-                "Which local image path(s) or public URL(s) should be edited?",
+        if operation == "image.edit":
+            questions.append(
+                _question(
+                    "inputs.image",
+                    True,
+                    "Which local image path or public URL should be edited?",
+                )
             )
-        )
+        else:
+            questions.append(
+                _question(
+                    "inputs.images",
+                    True,
+                    "Which local image paths or public URLs should be edited? (1-3 images)",
+                )
+            )
         aspect_ratios = _list_value(constraints, "aspectRatios", "aspect_ratios")
         resolutions = _list_value(constraints, "resolutions")
         if aspect_ratios:

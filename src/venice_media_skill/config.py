@@ -43,18 +43,18 @@ class Settings:
         environ: dict[str, str] | None = None,
     ) -> Settings:
         env = os.environ if environ is None else environ
-        config_dir = Path(env.get("VENICE_MEDIA_CONFIG_DIR", user_config_path(APP_NAME)))
-        cache_dir = Path(env.get("VENICE_MEDIA_CACHE_DIR", user_cache_path(APP_NAME)))
-        state_dir = Path(env.get("VENICE_MEDIA_STATE_DIR", user_state_path(APP_NAME)))
+        config_dir = _normalize_path(env.get("VENICE_MEDIA_CONFIG_DIR", str(user_config_path(APP_NAME))))
+        cache_dir = _normalize_path(env.get("VENICE_MEDIA_CACHE_DIR", str(user_cache_path(APP_NAME))))
+        state_dir = _normalize_path(env.get("VENICE_MEDIA_STATE_DIR", str(user_state_path(APP_NAME))))
         config = _load_json_config(config_dir / "config.json")
         base_url = str(env.get("VENICE_BASE_URL", config.get("base_url", DEFAULT_BASE_URL))).rstrip("/")
         api_key = env.get("VENICE_API_KEY")
-        output_dir = Path(
+        output_dir = _normalize_path(
             env.get(
                 "VENICE_MEDIA_OUTPUT_DIR",
                 str(config.get("output_dir", Path.cwd() / "venice-media-output")),
             )
-        ).expanduser()
+        )
         try:
             timeout_seconds = float(env.get("VENICE_MEDIA_TIMEOUT", config.get("timeout_seconds", 120)))
         except (TypeError, ValueError) as exc:
@@ -98,6 +98,10 @@ class Settings:
             self.output_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_path(value: str) -> Path:
+    return Path(value).expanduser().resolve(strict=False)
 
 
 def _validate_safe_path(path: Path, name: str) -> None:

@@ -118,17 +118,17 @@ git push origin vX.Y.Z
 
 - GitHub Actions workflow (`.github/workflows/release.yml`) automatically:
   1. Triggers on new tags matching `v*` pattern
-  2. Builds wheel and source distribution
-  3. Creates GitHub Release
-  4. Attaches artifacts to the release
-  5. Publishes to PyPI (if configured)
+  2. Verifies tag matches package version (via `verify-release.py`)
+  3. Builds wheel and source distribution
+  4. Creates GitHub Release
+  5. Attaches artifacts to the release
 
 ### 3. Manual Verification
 
 - [ ] **Verify GitHub Release** was created successfully
 - [ ] **Confirm artifacts** are attached to the release
 - [ ] **Check release notes** are populated from CHANGELOG
-- [ ] **Test installation from PyPI** (if published)
+- [ ] **Test installation from wheel or sdist** (if published)
 
 ---
 
@@ -190,7 +190,6 @@ Track release metrics:
 
 ### 3. Monitor
 
-- [ ] **Monitor PyPI downloads** (if published)
 - [ ] **Watch for issues** related to the new release
 - [ ] **Address critical bugs** with patch releases if needed
 

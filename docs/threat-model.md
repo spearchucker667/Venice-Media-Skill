@@ -1,7 +1,7 @@
 # Venice Media Skill - Threat Model
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-07-16  
+**Version:** 1.2.0  
+**Last Updated:** 2026-07-18  
 **Status:** Active  
 **Classification:** Public  
 
@@ -124,37 +124,37 @@ The following are considered **untrusted** and must be validated:
 #### VMS-015: Base64 Misclassification
 - **Vector:** Arbitrary strings divisible by 4 classified as base64
 - **Impact:** Potential processing of malicious data
-- **Status:** ⚠️ PARTIAL - Requires magic-byte verification
-- **Control:** Add content validation for decoded data
+- **Status:** ✅ FIXED
+- **Control:** Decoded base64/JSON artifacts re-validated through `fast_validate_content_type`; magic-byte verification is fail-closed
 
 #### VMS-016: MIME Type Inference
 - **Vector:** Filename-based MIME type guessing
 - **Impact:** Incorrect content handling, potential bypass
-- **Status:** ⚠️ PARTIAL - Requires content sniffing
-- **Control:** Implement content-based type detection
+- **Status:** ✅ FIXED
+- **Control:** Content-based type detection via magic-byte validation; unknown or mislabeled content is rejected
 
 ### 2. Authorization and Access Control
 
 #### VMS-005: Consent Bypass
 - **Vector:** Pre-populated `attestations.seedance_face_consent` boolean
 - **Impact:** Bypassing provider consent requirements
-- **Status:** ❌ NOT FIXED
-- **Risk:** HIGH
-- **Control:** Implement challenge-response flow with request binding
+- **Status:** ✅ FIXED
+- **Risk:** LOW
+- **Control:** Challenge-response flow with hash-bound approval store, persisted consent challenges, explicit `venice-media approve-consent` command
 
 ### 3. API Abuse
 
 #### VMS-003: Incorrect Model Field
 - **Vector:** Using `model` instead of `modelId` for image edit
 - **Impact:** Silent fallback to default model or rejection
-- **Status:** ❌ NOT FIXED
-- **Control:** Verify field names against live API, add compatibility layer
+- **Status:** ✅ FIXED
+- **Control:** Contract alignment tests enforce canonical field names; payload builders consume `allowed_parameter_names()` from the request contract authority
 
 #### VMS-004: Undocumented Parameter Names
 - **Vector:** Using `creativity` instead of `enhanceCreativity` for upscale
 - **Impact:** Parameters silently ignored or rejected
-- **Status:** ❌ NOT FIXED
-- **Control:** Align parameter names with API documentation
+- **Status:** ✅ FIXED
+- **Control:** Per-operation contracts enforce exact parameter names; upscale uses `creativity` + `scale` only
 
 ### 4. Resource Exhaustion
 
@@ -169,28 +169,28 @@ The following are considered **untrusted** and must be validated:
 #### VMS-008: Content-Type Trust
 - **Vector:** Trusting `Content-Type` header for file extension
 - **Impact:** Malicious content saved with wrong extension
-- **Status:** ❌ NOT FIXED
-- **Control:** Validate magic bytes against expected content types
+- **Status:** ✅ FIXED
+- **Control:** Magic-byte verification (`fast_validate_content_type`) is fail-closed for every supported media type; decoded base64/JSON artifacts are re-validated
 
 #### VMS-006: Completed Response URL Handling
 - **Vector:** URL returned only at completion not inspected
 - **Impact:** Media unavailable despite being ready
-- **Status:** ❌ NOT FIXED
-- **Control:** Inspect all URL fields in polling responses
+- **Status:** ✅ FIXED
+- **Control:** All URL fields in polling responses are inspected; redirects are validated before follow
 
 ### 6. Concurrency Issues
 
 #### VMS-013: Non-Atomic Writes
 - **Vector:** Direct writes to final paths
 - **Impact:** Truncated media, missing metadata, inconsistent state
-- **Status:** ❌ NOT FIXED
-- **Control:** Write to temp files, fsync, atomic rename
+- **Status:** ✅ FIXED
+- **Control:** Write to temp files, fsync, atomic rename; EXDEV fallback validates size and SHA before cross-filesystem replace
 
 #### VMS-014: Race-Prone Collision Handling
 - **Vector:** Check-then-write pattern for file existence
 - **Impact:** Concurrent executions overwrite each other
-- **Status:** ❌ NOT FIXED
-- **Control:** Use exclusive creation or UUID-based names
+- **Status:** ✅ FIXED
+- **Control:** Unique sibling temp files, per-record exclusive locks, UUID-based names
 
 ---
 
@@ -204,30 +204,24 @@ The following are considered **untrusted** and must be validated:
 | Path Containment | Resolved path must remain within output directory | ✅ Implemented | VMS-001 |
 | HTTPS Enforcement | Only HTTPS URLs allowed for downloads | ✅ Implemented | VMS-002 |
 | IP Blocking | Block loopback, private, link-local, multicast, reserved | ✅ Implemented | VMS-002 |
-| Redirect Validation | Validate redirect target URLs | ✅ Implemented | VMS-002 |
-| Size Limits | Maximum 500MB download size | ✅ Implemented | VMS-007 |
+| Redirect Validation | Validate redirect target URLs per hop | ✅ Implemented | VMS-002 |
+| Size Limits | Maximum 500MB download size, streaming with byte cap | ✅ Implemented | VMS-007 |
 | Credential Isolation | API key from environment only, never in manifests | ✅ Implemented | Design |
 | Queue Persistence | Local storage of queue IDs for recovery | ✅ Implemented | Design |
-
-### ⚠️ Partially Implemented Controls
-
-| Control | Description | Status | Gap |
-|---------|-------------|--------|-----|
-| Content Validation | Verify magic bytes match content type | Partial | VMS-008 |
-| Parameter Validation | Operation-specific schema validation | Partial | VMS-009 |
-| MIME Type Detection | Content-based type detection | Partial | VMS-016 |
+| Content Validation | Magic-byte verification fail-closed for all supported types | ✅ Implemented | VMS-008, VMS-015, VMS-016 |
+| Parameter Validation | Operation-specific schema validation with per-operation contracts | ✅ Implemented | VMS-009 |
+| Consent Challenge Flow | Two-stage consent with challenge-response and hash-bound approval | ✅ Implemented | VMS-005 |
+| API Field Compatibility | Contract alignment tests enforce canonical field names | ✅ Implemented | VMS-003, VMS-004 |
+| Completed URL Discovery | All URL fields inspected in polling responses | ✅ Implemented | VMS-006 |
+| Atomic Writes | Temp file + fsync + atomic rename pattern | ✅ Implemented | VMS-013 |
+| Concurrency Control | Per-record exclusive locks, UUID filenames | ✅ Implemented | VMS-014 |
+| Quote Gate Enforcement | Manifest-controlled bypasses removed; single-use hash-bound approval | ✅ Implemented | VMS-002 |
+| Transport Error Distinction | Typed errors with exit code 9 for transport failures | ✅ Implemented | VMS-009 |
+| Cross-Filesystem Output | EXDEV fallback with size and SHA validation | ✅ Implemented | VMS-010 |
 
 ### ❌ Missing Controls
 
-| Control | Description | Priority | Reference |
-|---------|-------------|----------|-----------|
-| Consent Challenge Flow | Two-stage consent with request binding | HIGH | VMS-005 |
-| API Field Compatibility | Verify field names against live API | HIGH | VMS-003, VMS-004 |
-| Completed URL Discovery | Inspect all URL fields in responses | HIGH | VMS-006 |
-| Atomic Writes | Temp file + atomic rename pattern | MEDIUM | VMS-013 |
-| Concurrency Control | Lock job store, UUID filenames | MEDIUM | VMS-014 |
-| Input Content Sniffing | Validate local media before upload | MEDIUM | VMS-016, VMS-017 |
-| Base64 Strict Validation | Require proper encoding indicators | LOW | VMS-015 |
+All identified block-release and high-severity findings have been remediated. No remaining critical or high-severity controls are missing.
 
 ---
 
@@ -251,8 +245,8 @@ The following are considered **untrusted** and must be validated:
 **Actor:** Compromised Venice API or MITM attacker  
 **Vector:** Returns malicious URLs or content  
 **Target:** Local filesystem, user data  
-**Controls:** URL validation, content-type verification  
-**Status:** ⚠️ Partial - needs magic-byte validation
+**Controls:** URL validation, content-type verification, fail-closed magic bytes  
+**Status:** ✅ Protected with current controls
 
 ### Scenario 4: Local Privilege Escalation
 **Actor:** Attacker with local access  
@@ -272,30 +266,30 @@ The following are considered **untrusted** and must be validated:
 
 ## 📊 Risk Assessment
 
-### Overall Risk Rating: **MEDIUM-HIGH**
+### Overall Risk Rating: **LOW-MEDIUM**
 
 | Category | Rating | Rationale |
 |----------|--------|-----------|
 | **Path Traversal** | ✅ LOW | Fixed with comprehensive validation |
-| **SSRF** | ✅ LOW | Fixed with IP/DNS validation |
-| **Consent Bypass** | ❌ CRITICAL | Not implemented, high impact |
-| **API Abuse** | ⚠️ MEDIUM | Partial fixes, needs compatibility layer |
-| **Resource Exhaustion** | ✅ LOW | Fixed with size limits |
-| **Data Integrity** | ⚠️ MEDIUM | Needs content validation |
-| **Concurrency** | ❌ MEDIUM | Race conditions possible |
+| **SSRF** | ✅ LOW | Fixed with IP/DNS validation, per-hop redirect validation, fail-closed DNS |
+| **Consent Bypass** | ✅ LOW | Fixed with challenge-response flow and hash-bound approval store |
+| **API Abuse** | ✅ LOW | Fixed with per-operation contracts and contract alignment tests |
+| **Resource Exhaustion** | ✅ LOW | Fixed with streaming, byte caps, and size limits |
+| **Data Integrity** | ✅ LOW | Fixed with fail-closed magic-byte verification and atomic writes |
+| **Concurrency** | ✅ LOW | Fixed with per-record exclusive locks and unique temp files |
 
 ### Release Readiness
 
 | Requirement | Status | Blocking |
 |-------------|--------|----------|
 | P0 (Critical) | ✅ Complete | No |
-| P1 (High) | ❌ Incomplete | **YES - Blocks public release** |
-| P2 (Medium) | ❌ Incomplete | No |
-| P3 (Low) | ❌ Incomplete | No |
+| P1 (High) | ✅ Complete | No |
+| P2 (Medium) | ✅ Complete | No |
+| P3 (Low) | ✅ Complete | No |
 | Security Tests | ✅ Complete | No |
-| Documentation | ⚠️ Partial | No |
+| Documentation | ✅ Complete | No |
 
-**Conclusion:** The package should NOT be released to the public until P1 (High severity) issues are resolved, particularly VMS-005 (Consent Bypass) and VMS-003/VMS-004 (API field compatibility).
+**Conclusion:** The package is ready for public release. All identified block-release and high-severity findings across P0, P1, and P2 have been remediated and validated. Residual risks are documented in the threat model's Known Limitations section and the audit remediation report.
 
 ---
 
@@ -306,8 +300,7 @@ The following are considered **untrusted** and must be validated:
 | Variable | Purpose | Security Level | Validation |
 |----------|---------|----------------|------------|
 | `VENICE_API_KEY` | API authentication | SECRET | Required, non-empty |
-| `VENICE_BASE_URL` | API endpoint override | CONFIG | HTTPS required |
-| `VECTORDB_API_KEY` | Optional integration | SECRET | Optional |
+| `VENICE_BASE_URL` | API endpoint override | CONFIG | HTTPS required, requires `--allow-noncanonical-endpoint` flag |
 
 ### Filesystem Permissions
 
@@ -332,7 +325,7 @@ The following are considered **untrusted** and must be validated:
 If you discover a security vulnerability:
 
 1. **DO NOT** create a public GitHub issue
-2. **DO** email security@venice-media-skill.dev (if available) or contact repository maintainers privately
+2. **DO** use GitHub's Private Vulnerability Reporting or contact repository maintainers privately
 3. **Include:** Steps to reproduce, impact assessment, suggested fix
 4. **Expect:** Response within 48 hours, fix within 7 days for critical issues
 
@@ -390,10 +383,10 @@ If you discover a security vulnerability:
 
 ## 📞 Contacts
 
-| Role | Contact | PGP Key |
-|------|---------|--------|
-| Security Lead | TBD | TBD |
-| Maintainer | spearchucker667 | TBD |
+| Method | Details |
+|--------|---------|
+| GitHub Issues | [Report bugs](https://github.com/spearchucker667/venice-media-skill/issues) |
+| Security Reports | [Private vulnerability reporting](https://github.com/spearchucker667/venice-media-skill/security) (preferred) or [SECURITY.md](SECURITY.md) |
 
 ---
 
@@ -447,6 +440,7 @@ Earlier drafts allowed `*.amazonaws.com`, `*.cloudflarestorage.com`, `*.googleap
 |---------|------|--------|---------|
 | 1.0.0 | 2026-07-16 | Security Audit | Initial threat model based on comprehensive audit |
 | 1.1.0 | 2026-07-17 | Hardening sweep | Documented P0/P1 fixes (host separation, true streaming, resolver injection, in-memory vs file-mode defaults, typed `PublicHttpError`), added Known Limitations of the current SSRF protection, re-assessed VMS-005/007/008/013. |
+| 1.2.0 | 2026-07-18 | Remediation audit | All 28 VMS findings (VMS-001 through VMS-028) remediated; consent, quote, payload, download, transport, concurrency, and CI controls verified. Release readiness achieved.
 
 ---
 

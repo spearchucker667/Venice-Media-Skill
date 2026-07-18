@@ -22,9 +22,6 @@
           "lyrics_prompt": {
             "type": "string"
           },
-          "queue_id": {
-            "type": "string"
-          },
           "speed": {
             "maximum": 4,
             "minimum": 0.25,
@@ -54,9 +51,6 @@
           "language": {
             "type": "string"
           },
-          "queue_id": {
-            "type": "string"
-          },
           "response_format": {
             "type": "string"
           },
@@ -69,9 +63,6 @@
       "audio.tts": {
         "additionalProperties": false,
         "properties": {
-          "queue_id": {
-            "type": "string"
-          },
           "response_format": {
             "type": "string"
           },
@@ -88,11 +79,7 @@
       },
       "image.background_remove": {
         "additionalProperties": false,
-        "properties": {
-          "queue_id": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "type": "object"
       },
       "image.edit": {
@@ -102,9 +89,6 @@
             "type": "string"
           },
           "output_format": {
-            "type": "string"
-          },
-          "queue_id": {
             "type": "string"
           },
           "resolution": {
@@ -152,9 +136,6 @@
           "quality": {
             "type": "string"
           },
-          "queue_id": {
-            "type": "string"
-          },
           "resolution": {
             "type": "string"
           },
@@ -194,9 +175,6 @@
           "quality": {
             "type": "string"
           },
-          "queue_id": {
-            "type": "string"
-          },
           "resolution": {
             "type": "string"
           }
@@ -210,9 +188,6 @@
             "maximum": 0.02,
             "minimum": 0,
             "type": "number"
-          },
-          "queue_id": {
-            "type": "string"
           },
           "scale": {
             "enum": [
@@ -237,9 +212,6 @@
             "type": "string"
           },
           "negative_prompt": {
-            "type": "string"
-          },
-          "queue_id": {
             "type": "string"
           },
           "reference_video_total_duration": {
@@ -297,16 +269,7 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {
-              "audio": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "queue_id": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "model": {
@@ -332,9 +295,6 @@
                 "type": "boolean"
               },
               "lyrics_prompt": {
-                "type": "string"
-              },
-              "queue_id": {
                 "type": "string"
               },
               "speed": {
@@ -377,16 +337,7 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {
-              "audio": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "queue_id": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "model": {
@@ -453,9 +404,6 @@
               "language": {
                 "type": "string"
               },
-              "queue_id": {
-                "type": "string"
-              },
               "response_format": {
                 "type": "string"
               },
@@ -493,16 +441,7 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {
-              "audio": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "queue_id": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "model": {
@@ -512,9 +451,6 @@
           "parameters": {
             "additionalProperties": false,
             "properties": {
-              "queue_id": {
-                "type": "string"
-              },
               "response_format": {
                 "type": "string"
               },
@@ -562,24 +498,6 @@
               "image": {
                 "minLength": 1,
                 "type": "string"
-              },
-              "images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
-                "minItems": 1,
-                "type": "array"
               }
             },
             "required": [
@@ -593,11 +511,7 @@
           },
           "parameters": {
             "additionalProperties": false,
-            "properties": {
-              "queue_id": {
-                "type": "string"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "prompt": {
@@ -627,42 +541,15 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "anyOf": [
-              {
-                "required": [
-                  "image"
-                ]
-              },
-              {
-                "required": [
-                  "images"
-                ]
-              }
-            ],
             "properties": {
               "image": {
                 "minLength": 1,
                 "type": "string"
-              },
-              "images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
-                "minItems": 1,
-                "type": "array"
               }
             },
+            "required": [
+              "image"
+            ],
             "type": "object"
           },
           "model": {
@@ -676,9 +563,6 @@
                 "type": "string"
               },
               "output_format": {
-                "type": "string"
-              },
-              "queue_id": {
                 "type": "string"
               },
               "resolution": {
@@ -716,30 +600,7 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {
-              "image": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
-                "minItems": 1,
-                "type": "array"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "model": {
@@ -783,9 +644,6 @@
                 "type": "string"
               },
               "quality": {
-                "type": "string"
-              },
-              "queue_id": {
                 "type": "string"
               },
               "resolution": {
@@ -845,25 +703,12 @@
           "inputs": {
             "additionalProperties": false,
             "properties": {
-              "image": {
-                "minLength": 1,
-                "type": "string"
-              },
               "images": {
                 "items": {
                   "minLength": 1,
                   "type": "string"
                 },
                 "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
                 "minItems": 1,
                 "type": "array"
               }
@@ -887,9 +732,6 @@
                 "type": "string"
               },
               "quality": {
-                "type": "string"
-              },
-              "queue_id": {
                 "type": "string"
               },
               "resolution": {
@@ -931,24 +773,6 @@
               "image": {
                 "minLength": 1,
                 "type": "string"
-              },
-              "images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
-                "minItems": 1,
-                "type": "array"
               }
             },
             "required": [
@@ -967,9 +791,6 @@
                 "maximum": 0.02,
                 "minimum": 0,
                 "type": "number"
-              },
-              "queue_id": {
-                "type": "string"
               },
               "scale": {
                 "enum": [
@@ -1025,10 +846,6 @@
                 "type": "string"
               },
               "image": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "queue_id": {
                 "minLength": 1,
                 "type": "string"
               },
@@ -1093,9 +910,6 @@
               "negative_prompt": {
                 "type": "string"
               },
-              "queue_id": {
-                "type": "string"
-              },
               "reference_video_total_duration": {
                 "minimum": 0,
                 "type": "number"
@@ -1146,70 +960,7 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {
-              "audio": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "elements": {
-                "items": {
-                  "type": "object"
-                },
-                "minItems": 1,
-                "type": "array"
-              },
-              "end_image": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "image": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "queue_id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "reference_audios": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 9,
-                "minItems": 1,
-                "type": "array"
-              },
-              "reference_videos": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "maxItems": 3,
-                "minItems": 1,
-                "type": "array"
-              },
-              "scene_images": {
-                "items": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "minItems": 1,
-                "type": "array"
-              },
-              "video": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
+            "properties": {},
             "type": "object"
           },
           "model": {

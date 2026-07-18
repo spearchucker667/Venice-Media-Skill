@@ -77,22 +77,47 @@ class ArtifactWriter:
         if not blobs:
             raise OutputError("Venice response did not contain decodable media.")
         artifacts: list[dict[str, Any]] = []
-        for index, blob in enumerate(blobs, start=1):
-            artifact_path = _resolve_artifact_path(
-                directory,
-                operation=operation,
-                filename=filename,
-                index=index,
-                total=len(blobs),
-                content_type=blob.content_type,
-                overwrite=overwrite,
-            )
+        # Preflight-reserve all artifact and sidecar paths before writing
+        # any blob, so a concurrent caller cannot race between our path
+        # resolution and content commit.  On any reservation failure we
+        # clean up placeholders from earlier reserved paths and raise.
+        entries: list[tuple[_Blob, Path, Path | None]] = []
+        reserved: list[Path] = []
+        try:
+            for blob in blobs:
+                artifact_path = _resolve_artifact_path(
+                    directory,
+                    operation=operation,
+                    filename=filename,
+                    index=entries.__len__() + 1,
+                    total=len(blobs),
+                    content_type=blob.content_type,
+                    overwrite=overwrite,
+                )
+                sidecar = artifact_path.with_suffix(artifact_path.suffix + ".metadata.json") if write_metadata else None
+                _reserve_path(artifact_path, overwrite=overwrite)
+                reserved.append(artifact_path)
+                if sidecar is not None:
+                    _reserve_path(sidecar, overwrite=overwrite)
+                    reserved.append(sidecar)
+                entries.append((blob, artifact_path, sidecar))
+        except Exception:
+            for p in reserved:
+                with suppress(FileNotFoundError):
+                    p.unlink()
+            raise
+        # After preflight reservation the caller owns every path — the
+        # leaf functions open with O_CREAT|O_EXCL (overwrite=False) only
+        # when there was no preflight; pass overwrite=True so they skip
+        # the reservation and use the placeholder already in place.
+        leaf_overwrite = True
+        for blob, artifact_path, sidecar in entries:
             if blob.file_path is not None:
-                _commit_file_blob(blob, artifact_path, overwrite=overwrite)
+                _commit_file_blob(blob, artifact_path, overwrite=leaf_overwrite)
                 bytes_written = blob.observed
                 sha256 = blob.sha256 or _sha256_of_file(artifact_path)
             else:
-                _atomic_write_bytes(artifact_path, blob.content or b"", allow_overwrite=overwrite)
+                _atomic_write_bytes(artifact_path, blob.content or b"", allow_overwrite=leaf_overwrite)
                 bytes_written = len(blob.content or b"")
                 sha256 = blob.sha256 or _sha256(blob.content or b"")
             artifact = {
@@ -101,8 +126,7 @@ class ArtifactWriter:
                 "bytes": bytes_written,
                 "sha256": sha256,
             }
-            if write_metadata:
-                sidecar = artifact_path.with_suffix(artifact_path.suffix + ".metadata.json")
+            if sidecar is not None:
                 sidecar_payload = {
                     "schema_version": 1,
                     "created_at": utc_now_iso(),
@@ -113,11 +137,28 @@ class ArtifactWriter:
                 _atomic_write_text(
                     sidecar,
                     json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n",
-                    allow_overwrite=overwrite,
+                    allow_overwrite=leaf_overwrite,
                 )
                 artifact["metadata_path"] = str(sidecar.resolve())
             artifacts.append(artifact)
         return artifacts
+
+
+def _reserve_path(target: Path, *, overwrite: bool) -> None:
+    """Atomically claim ``target`` via ``O_CREAT|O_EXCL``.
+
+    The caller owns the zero-byte placeholder; a subsequent
+    ``os.replace(temp, target)`` on a file the caller holds is safe.
+    When ``overwrite=True`` the call is a no-op.
+    """
+    if overwrite:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError as exc:
+        raise OutputError(f"Output already exists (set overwrite=true): {target}") from exc
 
 
 def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = False) -> Path:
@@ -130,8 +171,14 @@ def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = Fa
     a crash would lose the original.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not allow_overwrite:
-        raise OutputError(f"Output already exists (set overwrite=true): {target}")
+    owned = False
+    if not allow_overwrite:
+        try:
+            fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            owned = True
+        except FileExistsError as exc:
+            raise OutputError(f"Output already exists (set overwrite=true): {target}") from exc
     fd, temp_path = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -149,6 +196,9 @@ def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = Fa
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(temp_path)
+        if owned:
+            with suppress(FileNotFoundError):
+                os.unlink(str(target))
         raise
 
 
@@ -161,8 +211,14 @@ def _atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = False
     write fails before ``os.replace`` swaps files in.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not allow_overwrite:
-        raise OutputError(f"Output already exists (set overwrite=true): {target}")
+    owned = False
+    if not allow_overwrite:
+        try:
+            fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            owned = True
+        except FileExistsError as exc:
+            raise OutputError(f"Output already exists (set overwrite=true): {target}") from exc
     fd, temp_path = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -181,6 +237,9 @@ def _atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = False
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(temp_path)
+        if owned:
+            with suppress(FileNotFoundError):
+                os.unlink(str(target))
         raise
 
 
@@ -200,13 +259,22 @@ def _commit_file_blob(blob: _Blob, final_path: Path, *, overwrite: bool) -> None
         raise OutputError(f"download was empty: {blob.file_path}")
     _validate_blob_magic(blob)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    if final_path.exists() and not overwrite:
-        raise OutputError(f"Output already exists (set overwrite=true): {final_path}")
+    owned = False
+    if not overwrite:
+        try:
+            fd = os.open(str(final_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            owned = True
+        except FileExistsError as exc:
+            raise OutputError(f"Output already exists (set overwrite=true): {final_path}") from exc
     source_resolved = blob.file_path.resolve()
     try:
         os.replace(source_resolved, final_path)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
+            if owned:
+                with suppress(FileNotFoundError):
+                    final_path.unlink()
             raise
         fd, temp_path = tempfile.mkstemp(dir=final_path.parent, prefix=f".{final_path.name}.", suffix=".tmp")
         try:
@@ -224,6 +292,9 @@ def _commit_file_blob(blob: _Blob, final_path: Path, *, overwrite: bool) -> None
         except Exception:
             with suppress(FileNotFoundError):
                 Path(temp_path).unlink()
+            if owned:
+                with suppress(FileNotFoundError):
+                    final_path.unlink()
             raise
 
 

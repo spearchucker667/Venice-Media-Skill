@@ -58,6 +58,8 @@ All runtime dependencies are declared in [`pyproject.toml`](pyproject.toml) and 
 | Package | Version | Purpose | License |
 |---------|---------|---------|---------|
 | **httpx** | >=0.28.1,<1 | HTTP client for Venice API | BSD |
+| **jsonschema** | >=4.23.0,<5 | JSON Schema validation for request manifests | MIT |
+| **openapi-spec-validator** | >=0.7.1,<1 | OpenAPI spec validation | Apache 2.0 |
 | **platformdirs** | >=4.3.6,<5 | Platform-specific directory paths | MIT |
 | **PyYAML** | >=6.0.2,<7 | YAML parsing for OpenAPI | MIT |
 
@@ -65,11 +67,14 @@ All runtime dependencies are declared in [`pyproject.toml`](pyproject.toml) and 
 
 | Package | Version | Purpose | License |
 |---------|---------|---------|---------|
+| **bandit** | >=1.8.3 | Security linting | Apache 2.0 |
 | **build** | >=1.2.2.post1 | Package building | MIT |
 | **mypy** | >=1.15.0 | Static type checking | MIT |
+| **pip-audit** | >=2.8.0 | Dependency vulnerability scanning | MIT |
 | **pytest** | >=8.3.5 | Testing framework | MIT |
 | **pytest-cov** | >=6.0.0 | Test coverage reporting | MIT |
 | **ruff** | >=0.11.0 | Linting and formatting | MIT |
+| **types-jsonschema** | >=4.23.0,<5 | Type hints for jsonschema | MIT |
 | **types-PyYAML** | >=6.0.12.20241230 | Type hints for PyYAML | MIT |
 
 > All dependencies are available via pip and licensed under permissive open source licenses.

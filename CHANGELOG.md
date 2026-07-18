@@ -45,6 +45,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | `TestQuoteApprovalBinding` | Single-use enforcement, hash-mismatch detected, max-cost breach rejected. |
 | `TestContractAlignment` | `model` (canonical) emitted, not `modelId`; upscale uses `creativity` + `scale` only; quote hash equals queue hash. |
 
+### 📋 Audit Remediation
+
+- 2026-07-18 remediation audit tracked 28 findings (VMS-001 through VMS-028) — all fixed.
+- New or changed files: `consent.py`, `errors.py`, `installer.py`, `jobs.py`, `output.py`, `payloads.py`, `planner.py`, `request.py`, `runner.py`, `util.py`, `cli.py`, `config.py`, `catalog.py`, `README.md`, `pyproject.toml`, CI workflows, release workflow, install scripts, OpenAPI snapshot, `verify-release.py`, `export-source.sh`, `verify-bundled-assets.py`.
+- 260 passed, 3 skipped, 82.49% branch coverage; mypy strict for all 17 source files.
+
 ---
 
 ## 🚀 [0.1.0] - 2026-07-16
@@ -96,6 +102,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 | Version | Date | Commits | Files Changed | Lines Added | Lines Deleted |
 |---------|------|---------|---------------|--------------|----------------|
+| Unreleased | 2026-07-18 | 8 | 68 | 24,077 | 2,140 |
 | 0.1.0 | 2026-07-16 | - | 93 | 69,172 | - |
 
 ---

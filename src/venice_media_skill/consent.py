@@ -45,9 +45,16 @@ _LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or str(user_state_path("veni
 _LOCK_STALE_AFTER_SECONDS: Final[float] = 30 * 60
 
 
-def _lock_record_body(host: str, pid: int) -> str:
+_lock_tokens: dict[Path, str] = {}
+
+
+def _generate_token() -> str:
+    return secrets.token_hex(16)
+
+
+def _lock_record_body(host: str, pid: int, token: str = "") -> str:
     """Body written into a freshly-created lock file."""
-    return f"host={host}\npid={pid}\nacquired_at={int(time.time())}\n"
+    return f"host={host}\npid={pid}\nacquired_at={int(time.time())}\nowner_token={token}\n"
 
 
 def _parse_lock_record(body: str) -> dict[str, str] | None:
@@ -85,7 +92,8 @@ def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> 
     lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     host = socket.gethostname() if hasattr(socket, "gethostname") else "unknown"
     pid = os.getpid()
-    body = _lock_record_body(host, pid).encode("utf-8")
+    token = _generate_token()
+    body = _lock_record_body(host, pid, token=token).encode("utf-8")
     start = time.perf_counter()
     stale_warned = False
     while True:
@@ -94,14 +102,14 @@ def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> 
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(body)
+                _lock_tokens[lock_path] = token
                 return
             if not lock_path.exists():
                 return
         except (FileExistsError, PermissionError, OSError):
             pass
-        # Stale-lock recovery: if the holder is on this host and the
-        # process is gone, OR the lock is older than 30 minutes, we
-        # steal it. Cross-host locks are not stolen unless expired.
+        # Stale-lock recovery: only steal if the holder process is
+        # confirmed dead on this host. Never steal solely due to age.
         if exclusive and lock_path.exists() and _try_stale_recovery(lock_path):
             stale_warned = True
             continue
@@ -114,11 +122,14 @@ def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> 
 
 
 def _try_stale_recovery(lock_path: Path) -> bool:
-    """Attempt to remove ``lock_path`` when it is verifiably stale.
+    """Attempt to remove ``lock_path`` when the holder is verifiably dead.
 
     Returns ``True`` if the lock was successfully cleared (the caller
-    should immediately retry). Returns ``False`` if the lock is fresh
-    and held by a live process or carried an unparseable record.
+    should immediately retry). Returns ``False`` if the lock is held by
+    a live process or the record is unparseable.
+
+    Never steals a lock solely due to age — the holder process must be
+    confirmed dead on this host.
     """
     try:
         body = lock_path.read_text(encoding="utf-8")
@@ -126,23 +137,7 @@ def _try_stale_recovery(lock_path: Path) -> bool:
         return False
     record = _parse_lock_record(body)
     if record is None:
-        try:
-            age = time.time() - lock_path.stat().st_mtime
-        except OSError:
-            return False
-        if age < _LOCK_STALE_AFTER_SECONDS:
-            return False
-        with contextlib.suppress(OSError):
-            lock_path.unlink()
-        return True
-    try:
-        age = time.time() - float(record.get("acquired_at", "0"))
-    except ValueError:
-        age = float("inf")
-    if age >= _LOCK_STALE_AFTER_SECONDS:
-        with contextlib.suppress(OSError):
-            lock_path.unlink()
-        return True
+        return False
     pid_str = record.get("pid", "")
     host = record.get("host", "")
     try:
@@ -150,7 +145,9 @@ def _try_stale_recovery(lock_path: Path) -> bool:
     except ValueError:
         return False
     if host and host != (socket.gethostname() if hasattr(socket, "gethostname") else "unknown"):
-        return False  # cross-host; do not steal
+        # Cross-host: do not steal. An expired lock from another host
+        # will be cleaned up when a process on that host runs recovery.
+        return False
     if pid <= 0:
         return False
     if _pid_alive(pid):
@@ -165,16 +162,31 @@ def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         return False
-    except OSError:
+    except (OSError, PermissionError):
         return True
 
 
 def _release_lock(path: Path, exclusive: bool = True) -> None:
-    """Release a file-based lock."""
+    """Release a file-based lock.
+
+    Only deletes the lock file when the caller's owner token matches
+    the on-disk record, preventing accidental theft from another holder.
+    """
     lock_path = _get_lock_path(path)
     if exclusive:
+        expected = _lock_tokens.pop(lock_path, None)
+        if expected is None:
+            return
+        try:
+            body = lock_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        record = _parse_lock_record(body)
+        stored_token = (record or {}).get("owner_token", "")
+        if stored_token != expected:
+            return
         with contextlib.suppress(OSError):
             lock_path.unlink(missing_ok=True)
 
@@ -214,8 +226,12 @@ class ConsentStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write_seed()
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            if not self.path.exists():
+                self._write_seed()
+        finally:
+            _release_lock(self.path, exclusive=True)
 
     def _write_seed(self) -> None:
         from .output import atomic_write_text
@@ -350,8 +366,85 @@ class ConsentStore:
             return ConsentApproval(**entry)
         return None
 
+    def claim(self, payload_hash: str, *, observed_cost: float | None) -> ConsentApproval | None:
+        """Atomically claim one matching consent approval.
+
+        The approval is moved to a ``_claimed`` section so it cannot be
+        double-claimed but can still be restored later with
+        :meth:`release_claim` or permanently consumed with
+        :meth:`finalize_claim`.
+        """
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            approvals = data.get("approvals", {})
+            for challenge_id, entry in list(approvals.items()):
+                if entry.get("payload_hash") != payload_hash or _is_expired(entry.get("expires_at", "")):
+                    continue
+                approval = ConsentApproval(**entry)
+                if observed_cost is not None and (
+                    not math.isfinite(observed_cost)
+                    or observed_cost < 0
+                    or (approval.max_cost is not None and observed_cost > approval.max_cost)
+                ):
+                    raise ConsentApprovalMissing("consent approval cost limit exceeded")
+                del approvals[challenge_id]
+                data.setdefault("_claimed", {})[challenge_id] = entry
+                self._write(data)
+                return approval
+            return None
+        finally:
+            _release_lock(self.path, exclusive=True)
+
+    def finalize_claim(self, payload_hash: str | None = None, *, challenge_id: str = "") -> None:
+        """Permanently delete a claimed approval.
+
+        Either ``payload_hash`` or ``challenge_id`` may be supplied; when
+        both are present ``challenge_id`` matches first.
+        """
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            claimed = data.get("_claimed", {})
+            for cid, entry in list(claimed.items()):
+                if challenge_id and cid != challenge_id:
+                    continue
+                if payload_hash and entry.get("payload_hash") != payload_hash:
+                    continue
+                del claimed[cid]
+                self._write(data)
+                return
+        finally:
+            _release_lock(self.path, exclusive=True)
+
+    def release_claim(self, payload_hash: str | None = None, *, challenge_id: str = "") -> None:
+        """Restore a claimed approval back to the active approvals pool.
+
+        Either ``payload_hash`` or ``challenge_id`` may be supplied; when
+        both are present ``challenge_id`` matches first.
+        """
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            claimed = data.get("_claimed", {})
+            for cid, entry in list(claimed.items()):
+                if challenge_id and cid != challenge_id:
+                    continue
+                if payload_hash and entry.get("payload_hash") != payload_hash:
+                    continue
+                del claimed[cid]
+                data.setdefault("approvals", {})[cid] = entry
+                self._write(data)
+                return
+        finally:
+            _release_lock(self.path, exclusive=True)
+
     def consume(self, payload_hash: str, *, observed_cost: float | None) -> ConsentApproval | None:
-        """Atomically claim one matching consent approval exactly once."""
+        """Atomically claim one matching consent approval exactly once.
+
+        Legacy alias — prefer :meth:`claim` / :meth:`finalize_claim` /
+        :meth:`release_claim` for the three-phase commit pattern.
+        """
         _acquire_lock(self.path, exclusive=True)
         try:
             data = self._read()
@@ -380,8 +473,12 @@ class QuoteApprovalStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write({})
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            if not self.path.exists():
+                self._write({})
+        finally:
+            _release_lock(self.path, exclusive=True)
 
     def record(
         self,
@@ -420,6 +517,67 @@ class QuoteApprovalStore:
         finally:
             _release_lock(self.path)
         return approval
+
+    def claim(self, *, approval_id: str, current_payload_hash: str, max_observed_cost: float | None) -> QuoteApproval:
+        """Atomically claim a quote approval without finalising its deletion.
+
+        The approval is moved to a ``_claimed`` section so it cannot be
+        double-claimed but can still be restored with :meth:`release_claim`
+        or permanently consumed with :meth:`finalize_claim`.
+        """
+        _acquire_lock(self.path)
+        try:
+            data = self._read()
+            entry = data.get(approval_id)
+            if entry is None:
+                raise ConsentApprovalMissing(approval_id)
+            if _is_expired(entry["expires_at"]):
+                raise ConsentApprovalMissing("expired")
+            approval = QuoteApproval(**entry)
+            if approval.payload_hash != current_payload_hash:
+                raise QuoteApprovalMismatch(approved_hash=approval.payload_hash, current_hash=current_payload_hash)
+            _exceeds_max_cost = (
+                max_observed_cost is not None
+                and approval.max_cost is not None
+                and max_observed_cost > approval.max_cost
+            )
+            if _exceeds_max_cost:
+                raise ConsentApprovalMissing(
+                    f"quote exceeded approved max_cost {approval.max_cost} (observed {max_observed_cost})"
+                )
+            # Move to _claimed: the approval is reserved for this submission
+            # but can be restored if the provider returns a definitive
+            # non-charging outcome (e.g. 409 needs_consent) before accepting
+            # the paid queue.
+            del data[approval_id]
+            data.setdefault("_claimed", {})[approval_id] = entry
+            self._write(data)
+        finally:
+            _release_lock(self.path)
+        return approval
+
+    def finalize_claim(self, *, approval_id: str) -> None:
+        """Permanently delete a claimed approval."""
+        _acquire_lock(self.path)
+        try:
+            data = self._read()
+            data.get("_claimed", {}).pop(approval_id, None)
+            self._write(data)
+        finally:
+            _release_lock(self.path)
+
+    def release_claim(self, *, approval_id: str) -> None:
+        """Restore a claimed approval back to the active pool."""
+        _acquire_lock(self.path)
+        try:
+            data = self._read()
+            claimed = data.get("_claimed", {})
+            entry = claimed.pop(approval_id, None)
+            if entry is not None:
+                data[approval_id] = entry
+                self._write(data)
+        finally:
+            _release_lock(self.path)
 
     def consume(self, *, approval_id: str, current_payload_hash: str, max_observed_cost: float | None) -> QuoteApproval:
         _acquire_lock(self.path)

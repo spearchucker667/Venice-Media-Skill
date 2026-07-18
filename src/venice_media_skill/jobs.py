@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,40 @@ from typing import Any
 from .consent import _acquire_lock, _release_lock
 from .errors import OutputError
 from .output import atomic_write_text
-from .util import redact_data, sha256_text, stable_json, utc_now_iso
+from .util import sha256_text, stable_json, utc_now_iso
+
+_QUERY_REDACT: re.Pattern[str] = re.compile(
+    r"((?:token|key|secret|signature|sig|api_key|access_token)=)[^&]+", re.IGNORECASE
+)
+_RECORD_SIZE_LIMIT: int = 256 * 1024  # 256 KiB cap per job record
+
+
+def _redact_url_query(url: str) -> str:
+    return _QUERY_REDACT.sub(r"\1[REDACTED]", url)
+
+
+def _sanitize_record_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _sanitize_record_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_record_payload(v) for v in value]
+    if isinstance(value, str):
+        if value.startswith(("http://", "https://")):
+            return _redact_url_query(value)
+        if value.startswith("data:"):
+            return f"data:{value.split(',')[0]},[REDACTED:{len(value)}bytes]"
+        return value
+    return value
+
+
+def _sanitize_download_url(value: Any) -> Any:
+    if isinstance(value, str):
+        if value.startswith(("http://", "https://")):
+            return _redact_url_query(value)
+        if value.startswith("data:"):
+            header = value.split(",", 1)[0]
+            return f"{header},[REDACTED:{len(value)}bytes]"
+    return value
 
 
 @dataclass(slots=True)
@@ -27,9 +61,10 @@ class JobStore:
         model: str,
         queue_id: str,
         request: dict[str, Any],
+        input_summary: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         record = {
-            "schema_version": 1,
+            "schema_version": 2,
             "media_type": media_type,
             "model": model,
             "queue_id": queue_id,
@@ -37,7 +72,7 @@ class JobStore:
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
             "request_sha256": sha256_text(stable_json(request)),
-            "request": redact_data(request),
+            "input_summary": input_summary,
             "artifact": None,
             "last_response": None,
         }
@@ -49,7 +84,12 @@ class JobStore:
         _acquire_lock(path)
         try:
             record = self.get(queue_id)
-            sanitized: dict[str, Any] = {key: redact_data(value) for key, value in changes.items()}
+            sanitized: dict[str, Any] = {}
+            for key, value in changes.items():
+                if key == "download_url":
+                    sanitized[key] = _sanitize_download_url(value)
+                else:
+                    sanitized[key] = _sanitize_record_payload(value)
             record.update(sanitized)
             record["updated_at"] = utc_now_iso()
             self._write(queue_id, record)
@@ -88,4 +128,10 @@ class JobStore:
 
     def _write(self, queue_id: str, record: dict[str, Any]) -> None:
         path = self._path(queue_id)
-        atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+        text = json.dumps(record, indent=2, sort_keys=True) + "\n"
+        if len(text.encode("utf-8")) > _RECORD_SIZE_LIMIT:
+            raise OutputError(
+                f"Job record for {queue_id} exceeds {_RECORD_SIZE_LIMIT}-byte cap; "
+                "reduce input size or avoid inline media."
+            )
+        atomic_write_text(path, text)

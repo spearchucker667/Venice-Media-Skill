@@ -343,11 +343,17 @@ def build_video_quote(request: MediaRequest) -> CanonicalPayload:
 
 
 def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
-    """``POST /audio/queue`` - canonical provider body for audio generation."""
+    """``POST /audio/queue`` - canonical provider body for audio generation.
+
+    Quote-only fields (``character_count``) are excluded from the queue
+    body per the provider schema (``QueueAudioRequest`` does not accept
+    ``character_count``). The quote builder re-attaches the field.
+    """
     if request.model is None or request.prompt is None:
         raise ValueError("audio.generate requires model and prompt")
     allowed = allowed_parameter_names("audio.generate")
     body = _copy_only(request.parameters, allowed)
+    body.pop("character_count", None)
     payload: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
     payload.update(body)
     return _wrap(request, "audio.generate", "/audio/queue", payload)
@@ -357,19 +363,21 @@ def build_audio_quote(request: MediaRequest) -> CanonicalPayload:
     """``POST /audio/quote`` - canonical provider body for audio quoting.
 
     Quote schema only accepts: model, duration_seconds, character_count.
-    Projected from the canonical queue payload so the quote/queue gate
-    cannot disagree about which fields are queued.
+    ``character_count`` is quote-only (not in the queue body) so we pull
+    it from the original request parameters.
     """
     queue_canonical = build_audio_queue(request)
-    expected_keys = ("model", "duration_seconds", "character_count")
+    expected_keys = ("model", "duration_seconds")
     quote_payload = {key: value for key, value in queue_canonical.payload.items() if key in expected_keys}
     if "model" not in quote_payload and request.model is not None:
         quote_payload["model"] = request.model
+    if (cc := request.parameters.get("character_count")) is not None:
+        quote_payload["character_count"] = cc
     return CanonicalPayload(
         operation=queue_canonical.operation,
         endpoint="/audio/quote",
         payload=quote_payload,
-        hash=queue_canonical.hash,
+        hash=_canonical_hash(quote_payload),
         input_hashes=queue_canonical.input_hashes,
     )
 

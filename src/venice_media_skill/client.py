@@ -620,6 +620,7 @@ class VeniceClient:
                             sha256=finalized.sha256,
                             path=current,
                             file_path=finalized.file_path,
+                            observed=finalized.observed,
                         )
         except BaseException:
             # Atomicity: any failed download must not leave a partial

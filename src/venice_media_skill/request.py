@@ -56,6 +56,54 @@ MODELLESS_OPERATIONS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Exact per-operation input contracts. Each entry lists the only accepted
+# ``inputs.*`` keys for that operation. Any key outside this set is rejected
+# at parse time. An empty set means the operation accepts no inputs.
+_PER_OPERATION_INPUTS: dict[str, set[str]] = {
+    "image.generate": set(),
+    "image.edit": {"image"},
+    "image.multi_edit": {"images"},
+    "image.upscale": {"image"},
+    "image.background_remove": {"image"},
+    "video.generate": {
+        "image",
+        "end_image",
+        "audio",
+        "video",
+        "reference_images",
+        "reference_videos",
+        "reference_audios",
+        "scene_images",
+        "elements",
+    },
+    "video.retrieve": set(),
+    "audio.tts": set(),
+    "audio.generate": set(),
+    "audio.retrieve": set(),
+    "audio.transcribe": {"audio"},
+}
+
+# Inputs that are required per operation (must be present and non-empty).
+_REQUIRED_INPUTS: dict[str, set[str]] = {
+    "image.edit": {"image"},
+    "image.multi_edit": {"images"},
+    "image.upscale": {"image"},
+    "image.background_remove": {"image"},
+    "audio.transcribe": {"audio"},
+}
+
+# Inputs that must be a list (not a scalar) per operation.
+_LIST_INPUTS: dict[str, set[str]] = {
+    "image.multi_edit": {"images"},
+    "video.generate": {
+        "reference_images",
+        "reference_videos",
+        "reference_audios",
+        "scene_images",
+        "elements",
+    },
+}
+
 
 @dataclass(slots=True)
 class OutputSpec:
@@ -207,21 +255,24 @@ class MediaRequest:
 
         _validate_parameters(self)
 
-        if self.operation in {"image.edit", "image.multi_edit"}:
+        # Input cardinality from the per-operation contracts.
+        required = _REQUIRED_INPUTS.get(self.operation)
+        if required:
+            for key in required:
+                if not self.inputs.get(key):
+                    raise RequestValidationError(f"{self.operation} requires inputs.{key}.")
+        if self.operation == "image.edit" and isinstance(self.inputs.get("image"), list):
+            raise RequestValidationError(
+                "image.edit accepts exactly one inputs.image; use image.multi_edit for multiple images."
+            )
+        if self.operation == "image.multi_edit":
             images = self.inputs.get("images")
-            image = self.inputs.get("image")
-            if self.operation == "image.edit" and not (image or images):
-                raise RequestValidationError("image.edit requires inputs.image or inputs.images.")
-            if self.operation == "image.multi_edit" and (not isinstance(images, list) or not 1 <= len(images) <= 3):
+            if not isinstance(images, list) or not 1 <= len(images) <= 3:
                 raise RequestValidationError("image.multi_edit requires inputs.images with 1-3 items.")
-        if self.operation in {"image.upscale", "image.background_remove"} and not self.inputs.get("image"):
-            raise RequestValidationError(f"{self.operation} requires inputs.image.")
         if self.operation == "video.generate" and not self.parameters.get("duration"):
             raise RequestValidationError("video.generate requires parameters.duration.")
         if self.operation in {"video.retrieve", "audio.retrieve"} and "queue_id" not in self.parameters:
             raise RequestValidationError(f"{self.operation} requires parameters.queue_id.")
-        if self.operation == "audio.transcribe" and not self.inputs.get("audio"):
-            raise RequestValidationError("audio.transcribe requires inputs.audio.")
         if (
             self.operation.startswith("video.generate") or self.operation.startswith("audio.generate")
         ) and self.execution.skip_quote:
@@ -310,7 +361,8 @@ def request_json_schema() -> dict[str, Any]:
         for key, constraints in numeric_constraints.items():
             if key in props:
                 props[key].update(constraints)
-        props["queue_id"] = {"type": "string"}
+        if op in {"video.retrieve", "audio.retrieve"}:
+            props["queue_id"] = {"type": "string"}
         return {
             "type": "object",
             "additionalProperties": False,
@@ -345,18 +397,16 @@ def request_json_schema() -> dict[str, Any]:
             shape["required"] = ["duration"]
         if op in {"video.retrieve", "audio.retrieve"}:
             shape["required"] = ["queue_id"]
-        input_properties = {key: _input_property(key) for key in sorted(_allowed_input_names(op))}
+        allowed_inputs = _allowed_input_names(op)
+        input_properties = {key: _input_property(key) for key in sorted(allowed_inputs)}
         inputs_schema: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "properties": input_properties,
         }
-        if op in {"image.upscale", "image.background_remove", "audio.transcribe"}:
-            inputs_schema["required"] = ["audio" if op == "audio.transcribe" else "image"]
-        elif op == "image.multi_edit":
-            inputs_schema["required"] = ["images"]
-        elif op == "image.edit":
-            inputs_schema["anyOf"] = [{"required": ["image"]}, {"required": ["images"]}]
+        op_required_inputs = _REQUIRED_INPUTS.get(op)
+        if op_required_inputs:
+            inputs_schema["required"] = sorted(op_required_inputs)
         branches.append(
             {
                 "if": {
@@ -519,26 +569,7 @@ def _reject_unknown_keys(mapping: Mapping[str, Any], allowed: frozenset[str] | s
 
 
 def _allowed_input_names(operation: str) -> set[str]:
-    if operation.startswith("image."):
-        return {"image", "images", "reference_images"}
-    if operation == "audio.transcribe":
-        return {"audio"}
-    if operation.startswith("video."):
-        return {
-            "image",
-            "end_image",
-            "audio",
-            "video",
-            "reference_images",
-            "reference_videos",
-            "reference_audios",
-            "scene_images",
-            "elements",
-            "queue_id",
-        }
-    if operation.startswith("audio."):
-        return {"audio", "queue_id"}
-    return set()
+    return _PER_OPERATION_INPUTS.get(operation, set())
 
 
 def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
@@ -547,8 +578,29 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
     if unknown:
         keys = ", ".join(f"inputs.{key}" for key in sorted(unknown))
         raise PayloadValidationError(f"Unknown fields: {keys}.")
-    if operation == "audio.transcribe" and "audio" not in inputs:
-        raise PayloadValidationError("audio.transcribe requires inputs.audio.")
+    required = _REQUIRED_INPUTS.get(operation)
+    if required:
+        for key in required:
+            if key not in inputs:
+                raise PayloadValidationError(f"{operation} requires inputs.{key}.")
+    # Validate cardinality for image operations.
+    if operation == "image.edit" and isinstance(inputs.get("image"), list):
+        raise PayloadValidationError(
+            "image.edit accepts exactly one inputs.image; use image.multi_edit for multiple images."
+        )
+    if operation == "image.multi_edit" and "images" in inputs:
+        images = inputs["images"]
+        if not isinstance(images, list) or not images:
+            raise PayloadValidationError("image.multi_edit requires inputs.images as a non-empty list.")
+        if len(images) > 3:
+            raise PayloadValidationError("image.multi_edit accepts at most 3 inputs.images.")
+    # Validate types for list inputs.
+    for key in _LIST_INPUTS.get(operation, set()):
+        if key in inputs:
+            if not isinstance(inputs[key], list):
+                raise PayloadValidationError(f"inputs.{key} must be a list for {operation}.")
+            if operation == "image.multi_edit" and not all(isinstance(item, str) for item in inputs[key]):
+                raise PayloadValidationError(f"inputs.{key} must be a list of strings for {operation}.")
 
 
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {

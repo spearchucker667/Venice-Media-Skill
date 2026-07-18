@@ -27,11 +27,16 @@ Each test maps to a numbered defect from the post-fix audit:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
+import httpx
 import jsonschema
 import pytest
 
@@ -46,7 +51,13 @@ from venice_media_skill.consent import (
     _acquire_lock,
     _release_lock,
 )
-from venice_media_skill.errors import ConfigurationError, ContentValidationError, RequestValidationError, TransportError
+from venice_media_skill.errors import (
+    ConfigurationError,
+    ContentValidationError,
+    OutputError,
+    RequestValidationError,
+    TransportError,
+)
 from venice_media_skill.output import (
     ArtifactWriter,
     _atomic_write_bytes,
@@ -61,7 +72,16 @@ from venice_media_skill.payloads import (
     build_video_quote,
 )
 from venice_media_skill.request import MediaRequest, request_json_schema
+from venice_media_skill.runner import MediaRunner, _ApprovalClaim
 from venice_media_skill.util import fast_validate_content_type
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
+    pid = proc.pid
+    proc.wait()
+    return pid
+
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n"
@@ -216,28 +236,52 @@ def test_p03_video_quote_projects_every_quote_field() -> None:
 
 
 def test_p04_audio_quote_carries_no_queue_only_fields() -> None:
-    """P0-4: only ``model``/``duration_seconds``/``character_count`` survive."""
-    request = MediaRequest.from_mapping(
+    """P0-4: only ``model``/``duration_seconds`` survive in quote; ``character_count``
+
+    is quote-only and never reaches the queue body. Approval hash (quote)
+    changes when ``character_count`` changes.
+    """
+    for request_kwargs in (
+        {"parameters": {"duration_seconds": 30, "force_instrumental": True}},
+        {"parameters": {"duration_seconds": 30, "character_count": 200, "force_instrumental": True}},
+    ):
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "audio.generate",
+                "model": "venice-music",
+                "prompt": "jazz",
+                **request_kwargs,  # type: ignore[arg-type]
+                "execution": {"dry_run": True, "wait": False},
+            }
+        )
+        queue = build_audio_queue(request)
+        quote = build_audio_quote(request)
+        assert "character_count" not in queue.payload
+        for forbidden in ("force_instrumental", "lyrics_prompt", "voice", "prompt"):
+            assert forbidden not in quote.payload
+        assert quote.payload["model"] == "venice-music"
+        assert quote.payload["duration_seconds"] == 30
+
+    # Approval hash must change when character_count changes (billing impact).
+    req_no_cc = MediaRequest.from_mapping(
         {
             "operation": "audio.generate",
             "model": "venice-music",
             "prompt": "jazz",
-            "parameters": {
-                "duration_seconds": 30,
-                "force_instrumental": True,
-                "lyrics_prompt": "lyrics",
-                "voice": "Aria",
-            },
+            "parameters": {"duration_seconds": 30},
             "execution": {"dry_run": True, "wait": False},
         }
     )
-    queue = build_audio_queue(request)
-    quote = build_audio_quote(request)
-    assert queue.hash == quote.hash
-    for forbidden in ("force_instrumental", "lyrics_prompt", "voice", "prompt"):
-        assert forbidden not in quote.payload
-    assert quote.payload["model"] == "venice-music"
-    assert quote.payload["duration_seconds"] == 30
+    req_with_cc = MediaRequest.from_mapping(
+        {
+            "operation": "audio.generate",
+            "model": "venice-music",
+            "prompt": "jazz",
+            "parameters": {"duration_seconds": 30, "character_count": 500},
+            "execution": {"dry_run": True, "wait": False},
+        }
+    )
+    assert build_audio_quote(req_no_cc).hash != build_audio_quote(req_with_cc).hash
 
 
 def test_p13_request_json_schema_is_meta_valid() -> None:
@@ -338,12 +382,18 @@ def test_p23_p24_lock_path_hashed_and_recovers_stale(tmp_path: Path, monkeypatch
     assert lock_a != lock_b
     # Place a stale lock referencing a dead PID at ``lock_a``; a fresh
     # acquire from this process must steal it (P2-4).
+    # Use a PID from a short-lived subprocess that has exited.
+    dead_pid = _dead_pid()
+
     fake_lock_a = lock_a
     fake_lock_a.parent.mkdir(parents=True, exist_ok=True)
     from datetime import UTC, datetime, timedelta
 
     past = (datetime.now(UTC) - timedelta(minutes=45)).timestamp()
-    fake_lock_a.write_text(f"host=somewhere-else\npid=1\nacquired_at={int(past)}\n", encoding="utf-8")
+    fake_lock_a.write_text(
+        f"host={socket.gethostname()}\npid={dead_pid}\nacquired_at={int(past)}\nowner_token=aaaa\n",
+        encoding="utf-8",
+    )
     file_a.parent.mkdir(parents=True, exist_ok=True)
     _acquire_lock(file_a)  # must steal the stale lock
     # After stealing+re-acquiring, the lock file holds the *current*
@@ -411,4 +461,223 @@ def test_transport_error_exit_code_9(monkeypatch: pytest.MonkeyPatch) -> None:
 # Sanity: ensure the VeniceClient constructor does not regress on a normal path.
 def test_venice_client_accepts_legal_base_url() -> None:
     client = VeniceClient(base_url="https://api.venice.ai", api_key="x", timeout_seconds=1)
+    client.close()
+
+
+# ---------------------------------------------------------------------------
+# VMS-CUR-001 — Streamed download must propagate observed to ArtifactWriter
+# ---------------------------------------------------------------------------
+
+
+def test_cur001_streamed_download_observed_propagates_through_artifact_writer(tmp_path: Path) -> None:
+    """VMS-CUR-001: download_public_file → ApiResponse.observed > 0 → ArtifactWriter commits.
+
+    Regression: ApiResponse constructed from the streamed _FileSink must carry
+    ``observed`` so that ``_extract_blobs`` recognises the file-backed blob.
+    """
+    body = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1024
+    expected_sha256 = hashlib.sha256(body).hexdigest()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "image/png"})
+
+    def _stub_resolve(_host: str) -> list[str]:
+        return ["8.8.8.8"]
+
+    destination = tmp_path / "downloaded.png"
+
+    client = VeniceClient(
+        base_url="https://api.example.test/api/v1",
+        api_key="key",
+        allow_noncanonical_endpoint=True,
+        resolver=_stub_resolve,
+    )
+
+    with httpx.MockTransport(handler) as transport:
+        response = client.download_public_file(
+            "https://cdn.venice.ai/clip.png",
+            destination=destination,
+            transport=transport,
+        )
+
+    assert response.file_path == destination
+    assert response.observed == len(body), f"expected observed={len(body)}, got {response.observed}"
+    assert response.sha256 == expected_sha256
+    assert response.content is None
+    assert destination.read_bytes() == body
+
+    writer = ArtifactWriter(tmp_path)
+    artifacts = writer.save_response(
+        response,
+        operation="image.generate",
+        output_dir=str(tmp_path / "out"),
+        filename="final",
+        overwrite=False,
+        write_metadata=True,
+        metadata={"model": "x"},
+    )
+
+    final = Path(artifacts[0]["path"])
+    assert final.is_file()
+    assert final.read_bytes() == body
+    assert final.suffix == ".png"
+    assert not destination.exists()
+
+
+# ---------------------------------------------------------------------------
+# VMS-CUR-012 — Atomic no-overwrite + multi-blob preflight reservation
+# ---------------------------------------------------------------------------
+
+
+def test_cur012_atomic_no_overwrite_uses_o_excl(tmp_path: Path) -> None:
+    """VMS-CUR-012: ``_atomic_write_bytes`` with allow_overwrite=False rejects TOCTOU races.
+
+    Regression: when ``allow_overwrite=False`` and the destination already
+    exists, the write must raise ``OutputError`` (delete-free). The atomic
+    reservation uses ``O_CREAT | O_EXCL`` so a concurrent writer cannot
+    sneak in between the existence check and the temp+replace.
+    """
+    target = tmp_path / "atomic.png"
+    target.write_bytes(b"pre-existing")
+    from venice_media_skill.output import _atomic_write_bytes
+
+    with pytest.raises(OutputError, match="already exists"):
+        _atomic_write_bytes(target, b"replacement")
+    # An exception did not destroy the existing file.
+    assert target.read_bytes() == b"pre-existing"
+
+
+def test_cur012_multiblob_preflight_reserves_all_paths(tmp_path: Path) -> None:
+    """VMS-CUR-012: multi-blob response reserves every artifact+sidecar path up front.
+
+    Regression: when the second reservation collides (another process
+    creates the same unique path between resolution and reservation),
+    the first reservation is cleaned up and the call raises.
+    """
+    from venice_media_skill.output import ArtifactWriter
+
+    encoded = base64.b64encode(_PNG).decode()
+    response = ApiResponse(
+        200,
+        "application/json",
+        {},
+        json_data={"data": [{"b64_json": encoded}, {"b64_json": encoded}]},
+    )
+    writer = ArtifactWriter(tmp_path)
+    # Stub ``_reserve_path`` to fail on the *second* reservation only.
+    import venice_media_skill.output as output_module
+
+    real_reserve = output_module._reserve_path
+    counter = {"n": 0}
+
+    def flaky_reserve(target: Path, *, overwrite: bool) -> None:
+        counter["n"] += 1
+        if counter["n"] == 2:
+            raise FileExistsError(17, "simulated")
+        real_reserve(target, overwrite=overwrite)
+
+    output_module._reserve_path = flaky_reserve  # type: ignore[assignment]
+    try:
+        with pytest.raises(FileExistsError):
+            writer.save_response(
+                response,
+                operation="image.generate",
+                output_dir=None,
+                filename="multi",
+                overwrite=False,
+                write_metadata=True,
+                metadata={},
+            )
+        # The first reservation was rolled back: no stray placeholder remained.
+        leftovers = [
+            p
+            for p in (tmp_path / "multi.png.metadata.json").parent.iterdir()
+            if p.name.startswith("multi") and p.read_bytes() == b""
+        ]
+        assert leftovers == []
+    finally:
+        output_module._reserve_path = real_reserve  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# VMS-CUR-013 — Approval claim is finalised only on provider acceptance
+# ---------------------------------------------------------------------------
+
+
+def test_cur013_claim_three_phase_commit_on_queue_id(tmp_path: Path) -> None:
+    """VMS-CUR-013: claim moves approval to ``_claimed``; finalise deletes it permanently."""
+    from venice_media_skill.consent import ConsentStore
+
+    consent = ConsentStore(tmp_path / "consent.json")
+    payload_hash = "a" * 64
+    cid = consent.record_challenge(
+        operation="video.generate",
+        model="venice-1",
+        payload_hash=payload_hash,
+        input_hashes=(),
+        provider_payload={
+            "consent": {"consent_version": "1", "policy_text": "p"},
+            "consent_flow": "seedance",
+            "face_media_roles": [],
+            "docs_url": "https://x",
+        },
+    ).challenge_id
+    consent.approve(challenge_id=cid, confirmed_max_cost=5.0, acknowledge_policy=True)
+    consent.claim(payload_hash, observed_cost=1.0)
+    # While pending, the approval is moved out of approvals into _claimed.
+    pending = consent._read()
+    assert cid not in pending["approvals"]
+    assert cid in pending.get("_claimed", {})
+    # finalise_claim removes the claim permanently.
+    consent.finalize_claim(challenge_id=cid)
+    post = consent._read()
+    assert cid not in post["approvals"]
+    assert cid not in post.get("_claimed", {})
+
+
+def test_cur013_claim_release_restores_approval_on_needs_consent(tmp_path: Path) -> None:
+    """VMS-CUR-013: a definitive non-charging ``409 needs_consent`` must release claims."""
+    from venice_media_skill.client import VeniceClient
+    from venice_media_skill.consent import ConsentStore
+    from venice_media_skill.jobs import JobStore
+    from venice_media_skill.output import ArtifactWriter
+
+    consent = ConsentStore(tmp_path / "consent.json")
+    payload_hash = "b" * 64
+    cid = consent.record_challenge(
+        operation="video.generate",
+        model="venice-1",
+        payload_hash=payload_hash,
+        input_hashes=(),
+        provider_payload={
+            "consent": {"consent_version": "1", "policy_text": "p"},
+            "consent_flow": "seedance",
+            "face_media_roles": [],
+            "docs_url": "https://x",
+        },
+    ).challenge_id
+    consent.approve(challenge_id=cid, confirmed_max_cost=5.0, acknowledge_policy=True)
+    consent.claim(payload_hash, observed_cost=1.0)
+    # While pending, the approval is no longer in the active pool.
+    assert consent.approval_for(payload_hash) is None
+    # Releasing the claim restores the approval so the user can retry.
+    consent.release_claim(challenge_id=cid)
+    assert consent.approval_for(payload_hash) is not None
+
+    # The Runner-level helper must use challenge_id when restoring a consent
+    # claim so the host agent does not need to re-approve.
+    client = VeniceClient(base_url="https://api.venice.ai", api_key="x", allow_noncanonical_endpoint=True)
+    writer = ArtifactWriter(tmp_path)
+    jobs = JobStore(tmp_path / "jobs.json")
+    runner = MediaRunner(client=client, writer=writer, jobs=jobs, consent_store=consent)
+    claim = _ApprovalClaim()
+    claim.consent_challenge_id = cid
+    claim.consent_store = consent
+    # Re-claim the (now restored) approval and then release it via the
+    # runner-level helper to verify the three-phase commit works as
+    # documented.
+    consent.claim(payload_hash, observed_cost=1.0)
+    assert consent.approval_for(payload_hash) is None
+    runner._release_claims(claim)
+    assert consent.approval_for(payload_hash) is not None
     client.close()

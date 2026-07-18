@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,22 @@ ENDPOINT_SIZE_LIMITS: dict[str, int] = {
 }
 
 QUOTE_REQUIRED_OPERATIONS = frozenset({"video.generate", "audio.generate"})
+
+
+@dataclass(slots=True)
+class _ApprovalClaim:
+    """Module-level record that tracks claimed approvals.
+
+    Held by the runner across the three-phase queue commit: the quote
+    and consent approvals are claimed (moved to a pending section),
+    then either finalized on provider acceptance or released on a
+    definitive non-charging outcome.
+    """
+
+    quote_approval_id: str = ""
+    quote_store: Any = None
+    consent_challenge_id: str = ""
+    consent_store: Any = None
 
 
 class MediaRunner:
@@ -219,8 +236,11 @@ class MediaRunner:
         if request.execution.dry_run:
             return self._dry_run(request, queue_canonical, include_inputs=media_type == "video")
 
-        if quote_canonical.hash != queue_canonical.hash:
-            raise OutputError("Internal error: quote/queue hashes diverged; refusing to submit a paid request.")
+        # Audio quote includes ``character_count`` (billing-only), so the
+        # quote and queue wire bodies legitimately differ. Use the quote
+        # canonical for approval (billing-relevant) and the queue canonical
+        # for the actual submission.
+        approval_canonical = quote_canonical
 
         # Submit exactly one quote request and exactly one queue request.
         # The runner never silently retries paid submissions.
@@ -234,21 +254,27 @@ class MediaRunner:
 
         # Quote approval gate. Without an approval that binds the canonical
         # payload hash, we surface an explicit "next_step" to the host agent
-        # rather than queueing.
+        # rather than queueing. The approval is **claimed** (not consumed)
+        # and released on definitive non-charging outcomes or finalized on
+        # provider acceptance.
+        quote_approval_id: str | None = None
         if do_quote:
-            self._require_quote_approval(
+            quote_approval_id = self._require_quote_approval(
                 request=request,
-                canonical=queue_canonical,
+                canonical=approval_canonical,
                 quote_response=quote_response,
             )
 
         # Seedance consent gate. We only attach consents when a stored
         # approval matches the canonical queue payload hash.
-        consent_block = self._consume_consent_approval(
+        consent_block, claimed_approvals = self._claim_consent_approval(
             request=request,
             canonical=queue_canonical,
             observed_cost=quote_cost(quote_response),
         )
+        if quote_approval_id:
+            claimed_approvals.quote_approval_id = quote_approval_id
+            claimed_approvals.quote_store = self.quote_store
 
         queue_body = dict(queue_canonical.payload)
         if consent_block is not None:
@@ -257,18 +283,26 @@ class MediaRunner:
         queued = self._request_preserving_consent(queue_canonical.endpoint, queue_body)
         maybe_consent = self._record_consent_if_needed(queue_canonical, queued, media_kind=media_type)
         if maybe_consent:
+            # Definitive non-charging outcome: restore claims so the user
+            # does not need to re-approve for the unchanged request.
+            self._release_claims(claimed_approvals)
             return maybe_consent
         if not isinstance(queued.json_data, dict):
+            self._release_claims(claimed_approvals)
             raise OutputError(f"{queue_canonical.endpoint} returned an unexpected response.")
         queue_id = queued.json_data.get("queue_id")
         if not isinstance(queue_id, str) or not queue_id:
+            self._release_claims(claimed_approvals)
             raise OutputError(f"{queue_canonical.endpoint} response did not include queue_id.")
+        # Provider accepted the paid queue: finalise claims permanently.
+        self._finalize_claims(claimed_approvals)
         download_url = queued.json_data.get("download_url")
         self.jobs.create(
             media_type=media_type,
             model=request.model or "",
             queue_id=queue_id,
             request=request.to_dict(),
+            input_summary=_summarize_inputs(request),
         )
         if isinstance(download_url, str):
             self.jobs.update(queue_id, download_url=download_url)
@@ -316,6 +350,7 @@ class MediaRunner:
                 model=model,
                 queue_id=queue_id,
                 request=request.to_dict(),
+                input_summary=_summarize_inputs(request),
             )
         else:
             if model is None:
@@ -672,39 +707,19 @@ class MediaRunner:
             ),
         }
 
-    def _consume_consent_approval(
-        self,
-        *,
-        request: MediaRequest,
-        canonical: payloads.CanonicalPayload,
-        observed_cost: float | None = None,
-    ) -> dict[str, Any] | None:
-        """Return a consent block only when an approval exists for ``canonical.hash``.
-
-        Any attempt to inject ``parameters.consents`` (or any other reserved
-        field) is rejected at manifest validation; here we only compose the
-        on-wire consent block from a stored approval record that matched the
-        exact canonical payload hash.
-        """
-        if self.consent_store is None:
-            return None
-        approval = self.consent_store.consume(canonical.hash, observed_cost=observed_cost)
-        if approval is None:
-            return None
-        # Provider expects exactly:
-        # {"consents": {"seedance": {"confirmed_terms_and_privacy": true,
-        # "confirmed_legal_right": true, "confirmed_screening_acknowledged": true}}}
-        block = build_consent_object(policy_version="")
-        return block
-
     def _require_quote_approval(
         self,
         *,
         request: MediaRequest,
         canonical: payloads.CanonicalPayload,
         quote_response: Mapping[str, Any],
-    ) -> None:
-        """Enforce policy: paid queue submissions require a hash-bound approval."""
+    ) -> str | None:
+        """Enforce policy: paid queue submissions require a hash-bound approval.
+
+        Returns the claimed approval_id on success, ``None`` if no quote
+        is required. The caller must finalize or release the claim after
+        the queue call outcome is known.
+        """
         cost = quote_cost(quote_response)
         if cost is None:
             raise QuoteApprovalRequired(
@@ -726,19 +741,83 @@ class MediaRunner:
                 quote=dict(quote_response),
             )
         try:
-            self.quote_store.consume(
+            claimed = self.quote_store.claim(
                 approval_id=approval.approval_id,
                 current_payload_hash=canonical.hash,
                 max_observed_cost=cost,
             )
-        except QuoteApprovalMismatch as exc:
-            raise exc
+        except QuoteApprovalMismatch:
+            raise
         except ConsentApprovalMissing as exc:
             raise QuoteApprovalRequired(
                 operation=request.operation,
                 payload_hash=canonical.hash,
                 quote=dict(quote_response),
             ) from exc
+        return claimed.approval_id
+
+    def _claim_consent_approval(
+        self,
+        *,
+        request: MediaRequest,
+        canonical: payloads.CanonicalPayload,
+        observed_cost: float | None = None,
+    ) -> tuple[dict[str, Any] | None, _ApprovalClaim]:
+        """Return a (consent_block, claim) pair.
+
+        The consent approval is **claimed** (moved to a pending section)
+        but not yet deleted. The caller must call ``_finalize_claims`` or
+        ``_release_claims`` with the returned claim after the queue call
+        outcome is known.
+        """
+        claim = _ApprovalClaim()
+        if self.consent_store is None:
+            return None, claim
+        approval = self.consent_store.claim(canonical.hash, observed_cost=observed_cost)
+        if approval is None:
+            return None, claim
+        claim.consent_challenge_id = approval.challenge_id
+        claim.consent_store = self.consent_store
+        block = build_consent_object(policy_version="")
+        return block, claim
+
+    def _consume_consent_approval(
+        self,
+        *,
+        request: MediaRequest,
+        canonical: payloads.CanonicalPayload,
+        observed_cost: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Compatibility wrapper: claim + finalize in a single atomic step.
+
+        Prefer :meth:`_claim_consent_approval` plus the
+        ``_finalize_claims`` / ``_release_claims`` three-phase commit in
+        new code; this single-step variant exists only for backwards
+        compatibility with synchronous / non-queued callers and is
+        strictly less recoverable than the three-phase pattern.
+        """
+        block, claim = self._claim_consent_approval(
+            request=request,
+            canonical=canonical,
+            observed_cost=observed_cost,
+        )
+        if block is not None:
+            self._finalize_claims(claim)
+        return block
+
+    def _finalize_claims(self, claim: _ApprovalClaim) -> None:
+        """Permanently consume all claimed approvals after provider acceptance."""
+        if claim.consent_store and claim.consent_challenge_id:
+            claim.consent_store.finalize_claim(challenge_id=claim.consent_challenge_id)
+        if claim.quote_store and claim.quote_approval_id:
+            claim.quote_store.finalize_claim(approval_id=claim.quote_approval_id)
+
+    def _release_claims(self, claim: _ApprovalClaim) -> None:
+        """Restore all claimed approvals on definitive non-charging outcome."""
+        if claim.consent_store and claim.consent_challenge_id:
+            claim.consent_store.release_claim(challenge_id=claim.consent_challenge_id)
+        if claim.quote_store and claim.quote_approval_id:
+            claim.quote_store.release_claim(approval_id=claim.quote_approval_id)
 
 
 # -- module-level helpers -----------------------------------------------------
