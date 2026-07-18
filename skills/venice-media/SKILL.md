@@ -37,13 +37,25 @@ When `$request` is empty, use the current user message.
 
 ## Environment check
 
-Run:
+Use this decision tree exactly:
 
 ```bash
-command -v venice-media >/dev/null 2>&1 && venice-media doctor
+venice-media --version
+venice-media doctor
+venice-media doctor --online
 ```
 
-If the command is missing, stop and tell the user to install this repository. If `VENICE_API_KEY` is missing, ask them to export it in their shell. Do not ask them to paste the key into chat.
+If the command is missing, stop and tell the user to install this repository. Treat the credential as an opaque secret: its textual prefix does not determine whether it is valid. Only `doctor --online` and its authenticated API response determine validity.
+
+If the key is available in Terminal but `doctor --online` reports it missing in the agent subprocess, explain that the host likely sanitizes its environment. On macOS, prefer `venice-media-keychain doctor --online`, which retrieves the `venice-api-key` Keychain item at execution time and scopes it to the child process. Otherwise ask the user to execute the authenticated command locally. Detect the actual host; never invent or assume an application bundle path.
+
+Never ask the user to paste or resend the credential in chat. Never use a FIFO, temporary secret file, plaintext `.env` file, credential-bearing command argument, or shell-history entry. A credential exposed in chat, logs, screenshots, issue reports, or shell history must be rotated.
+
+For image discovery always run:
+
+```bash
+venice-media models --type image --refresh
+```
 
 ## Bundled API reference
 

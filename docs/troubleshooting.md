@@ -12,12 +12,30 @@ Start a new host-agent session after installation.
 
 ## Missing API key
 
+First run `venice-media --version`, `venice-media doctor`, and `venice-media doctor --online`. The online check is authoritative: credentials are opaque, and no key prefix proves validity or invalidity.
+
+If the key works in Terminal but is missing in an agent subprocess, the host has likely sanitized its environment. On macOS, store the item under service `venice-api-key` and account `$USER`, then use the installed launcher:
+
 ```bash
-export VENICE_API_KEY='...'
-venice-media doctor --online
+venice-media-keychain doctor --online
 ```
 
-Do not add the key to a request JSON file.
+The equivalent wrapper pattern is:
+
+```bash
+VENICE_API_KEY="$(
+  security find-generic-password \
+    -a "$USER" \
+    -s "venice-api-key" \
+    -w
+)" exec venice-media "$@"
+```
+
+Do not paste or resend credentials in chat, pass them as command-line arguments, use FIFOs or temporary secret files, or put them in manifests. Plaintext `.env` files are not the default. Rotate any credential exposed in chat, logs, screenshots, issue reports, or shell history.
+
+## Multiple executables
+
+Run `venice-media installations` (or `command -v -a venice-media` in zsh) to report every PATH candidate, the active executable, its resolved target, Python interpreter, package version/location, editable status, and missing runtime dependencies. This command is read-only. A global executable importing an editable checkout through the wrong interpreter is stale and should be reinstalled in a self-contained environment.
 
 ## Model not found
 

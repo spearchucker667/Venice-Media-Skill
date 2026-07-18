@@ -52,6 +52,7 @@ dev = [
 
 [project.scripts]
 venice-media = "venice_media_skill.cli:main"
+venice-media-keychain = "venice_media_skill.keychain:main"
 
 [project.urls]
 Documentation = "https://github.com/spearchucker667/venice-media-skill#readme"

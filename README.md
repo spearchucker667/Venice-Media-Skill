@@ -188,6 +188,23 @@ venice-media doctor
 venice-media doctor --online
 ```
 
+`doctor --online` is the canonical authentication test. A Venice credential is opaque and may be assigned to `VENICE_API_KEY` regardless of its textual prefix. The result distinguishes a missing key, rejected credential, network failure, malformed response, and success without revealing the secret.
+
+On macOS, agent hosts with sanitized environments can use the Keychain-backed launcher:
+
+```bash
+venice-media-keychain doctor --online
+venice-media-keychain models --type image --refresh
+```
+
+It reads the Keychain item identified by account `$USER` and service `venice-api-key`, then scopes `VENICE_API_KEY` only to the exec'd child. It uses no eval or temporary file and does not print the credential. Never paste credentials into chat. Rotate any credential exposed in chat, logs, screenshots, issue reports, or shell history.
+
+To diagnose duplicate or stale installations without changing them:
+
+```bash
+venice-media installations
+```
+
 #### Discover Models
 
 ```bash

@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import atexit
 import importlib.resources as importlib_resources
+import importlib.util
 import json
 import os
 import platform
+import re
+import shutil
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -16,8 +19,6 @@ from typing import Any, cast
 
 import httpx
 import yaml
-from openapi_spec_validator import validate
-from openapi_spec_validator.validation.exceptions import OpenAPIValidationError, ValidatorDetectError
 
 from . import __version__
 from .catalog import ModelCatalog
@@ -76,7 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("operation")
     plan.add_argument("--prompt")
     plan.add_argument("--model")
-    plan.add_argument("--refresh-models", action="store_true")
+    plan.add_argument("--refresh", action="store_true", help="Ignore the local one-hour model cache.")
+
+    subparsers.add_parser("installations", help="Report venice-media executables found on PATH without modifying them.")
 
     run = subparsers.add_parser("run", help="Execute a JSON request manifest.")
     run.add_argument("manifest")
@@ -334,6 +337,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
     if args.command == "validate-openapi":
         path = _resolve_bundled_openapi(args.path)
         return _validate_openapi_dispatch(path)
+    if args.command == "installations":
+        return _installation_diagnostics()
 
     settings = Settings.load(require_api_key=False)
     settings.ensure_directories()
@@ -360,7 +365,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
             args.operation,
             prompt=args.prompt,
             model=args.model,
-            refresh_models=bool(args.refresh_models),
+            refresh_models=bool(args.refresh),
         )
     if args.command == "run":
         request = MediaRequest.from_file(args.manifest)
@@ -410,7 +415,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
                 args.operation,
                 prompt=args.prompt,
                 model=args.model,
-                refresh_models=bool(args.refresh_models),
+                refresh_models=bool(args.refresh),
             )
     raise ValueError(f"Unhandled command: {args.command}")
 
@@ -484,16 +489,90 @@ def _doctor(settings: Settings, *, online: bool, allow_noncanonical_endpoint: bo
             checks["online_check"] = "skipped_missing_api_key"
             ok = False
         else:
-            with VeniceClient(
-                base_url=settings.base_url,
-                api_key=settings.api_key,
-                timeout_seconds=settings.timeout_seconds,
-                allow_noncanonical_endpoint=allow_noncanonical_endpoint,
-            ) as client:
-                payload = client.get_json("/models", params={"type": "image"})
-                count = len(payload.get("data", [])) if isinstance(payload, dict) else 0
-                checks["online_check"] = {"status": "ok", "image_model_count": count}
+            try:
+                with VeniceClient(
+                    base_url=settings.base_url,
+                    api_key=settings.api_key,
+                    timeout_seconds=settings.timeout_seconds,
+                    allow_noncanonical_endpoint=allow_noncanonical_endpoint,
+                ) as client:
+                    payload = client.get_json("/models", params={"type": "image"})
+                data = payload.get("data")
+                if not isinstance(data, list):
+                    checks["online_check"] = {
+                        "status": "malformed_response",
+                        "message": "Venice returned an unexpected models response shape.",
+                    }
+                    ok = False
+                else:
+                    checks["online_check"] = {"status": "ok", "image_model_count": len(data)}
+            except ApiError as exc:
+                checks["online_check"] = {
+                    "status": "rejected_credential" if exc.status_code in {401, 403} else "api_error",
+                    "status_code": exc.status_code,
+                    "message": (
+                        "Venice rejected the credential."
+                        if exc.status_code in {401, 403}
+                        else "Venice returned an API error."
+                    ),
+                }
+                ok = False
+            except (TransportError, httpx.HTTPError) as exc:
+                checks["online_check"] = {
+                    "status": "network_failure",
+                    "transport": type(exc).__name__,
+                    "message": "Unable to reach Venice.",
+                }
+                ok = False
     return {"status": "ok" if ok else "attention_required", "checks": checks}
+
+
+def _installation_diagnostics() -> dict[str, Any]:
+    """Report PATH candidates and the runtime backing the active process."""
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        executable = Path(directory).expanduser() / "venice-media"
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            continue
+        path = str(executable.absolute())
+        if path in seen:
+            continue
+        seen.add(path)
+        resolved = executable.resolve()
+        try:
+            launcher_text = executable.read_text(encoding="utf-8")[:8192]
+        except (OSError, UnicodeDecodeError):
+            launcher_text = ""
+        match = re.search(r"(?m)^\s*exec\s+[\"']?([^\"'\s]+)", launcher_text)
+        wrapper_target = match.group(1) if match else None
+        candidates.append(
+            {
+                "path": path,
+                "resolved_target": str(resolved),
+                "wrapper_target": wrapper_target,
+                "active": path == shutil.which("venice-media"),
+            }
+        )
+    active = shutil.which("venice-media")
+    required = ("httpx", "jsonschema", "openapi_spec_validator", "platformdirs", "yaml")
+    missing = [name for name in required if importlib.util.find_spec(name) is None]
+    package_location = str(Path(__file__).resolve().parent)
+    editable = "site-packages" not in package_location and "dist-packages" not in package_location
+    return {
+        "status": "ok" if not missing else "attention_required",
+        "active_executable": active,
+        "installations": candidates,
+        "runtime": {
+            "python_interpreter": sys.executable,
+            "package_version": __version__,
+            "package_location": package_location,
+            "editable_install": editable,
+            "missing_runtime_dependencies": missing,
+        },
+    }
 
 
 def _validate_openapi(path: Path) -> dict[str, Any]:
@@ -529,6 +608,9 @@ def _validate_openapi(path: Path) -> dict[str, Any]:
     }
     missing = sorted(required.difference(paths))
     if not missing:
+        from openapi_spec_validator import validate
+        from openapi_spec_validator.validation.exceptions import OpenAPIValidationError, ValidatorDetectError
+
         try:
             validate(payload)
         except (OpenAPIValidationError, ValidatorDetectError) as exc:

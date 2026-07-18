@@ -32,6 +32,8 @@ Tool-specific skill discovery changes over time. The stable integration is:
 
 Do not add the Venice API key to project instruction files, MCP configuration, command aliases, or manifests.
 
+Agent hosts may sanitize subprocess environments even when the key is exported in a normal Terminal. Agents must run `venice-media --version`, `venice-media doctor`, then `venice-media doctor --online`. They must never judge a credential by its prefix or request it in chat. On macOS, `venice-media-keychain <arguments>` securely retrieves the existing `venice-api-key` Keychain item and execs the ordinary CLI; on other platforms, ask the user to run the authenticated command in their configured local shell.
+
 ## Project-local installation
 
 For a repository-scoped skill:
