@@ -1,16 +1,43 @@
-# Python
+# Python bytecode and interpreter caches
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+
+# Python environments
+.Python
 .venv/
+.venv-*/
 venv/
+env/
+ENV/
+
+# Packaging and build output
 dist/
 build/
+site/
+wheelhouse/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, coverage, type-check, and lint output
 .coverage
 .coverage.*
 htmlcov/
+coverage.xml
+coverage.json
+junit.xml
+*.junit.xml
 .pytest_cache/
+.hypothesis/
+.tox/
+.nox/
 .mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyright/
 .ruff_cache/
 
 # Credentials and local config
@@ -19,26 +46,46 @@ htmlcov/
 !.env.example
 *.key
 *.pem
+*.p12
+*.pfx
+*.crt
+*.cer
 
 # Runtime state and media
 .venice-media/
 venice-media-output/
+venice-media-output-*/
 *.mp3
 *.wav
 *.flac
 *.aac
+*.m4a
+*.ogg
 *.opus
 *.pcm
 *.mp4
 *.mov
 *.webm
+*.mkv
+*.avi
 
-# Editor and OS
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Editor and operating-system metadata
 .DS_Store
 Thumbs.db
+.Spotlight-V100
+.Trashes
 .idea/
 .vscode/
+
+# Local audit evidence and generated reports
 /docs/audits/*
 !/docs/audits/Venice_Media_Skill_Remediation_2026-07-18.md
-/.venv-audit
-.audit-evidence/baseline.txt
+/.audit-evidence/

@@ -374,10 +374,9 @@ If you discover a security vulnerability:
 - Regression tests mandatory for security fixes
 
 ### Testing
-- Unit tests for all security controls
-- Integration tests for end-to-end flows
-- Fuzz testing for input validation
-- Penetration testing for new features
+- Offline unit and integration tests cover the documented security-critical paths.
+- `scripts/validate.sh` enforces lint, strict typing, branch coverage, Bandit, dependency audit, build, schema/reference parity, and archive inspection.
+- Live provider behavior, fuzz campaigns, and penetration testing are separate explicitly authorized activities; this repository does not claim they run in the default gate.
 
 ---
 
@@ -386,7 +385,7 @@ If you discover a security vulnerability:
 | Method | Details |
 |--------|---------|
 | GitHub Issues | [Report bugs](https://github.com/spearchucker667/venice-media-skill/issues) |
-| Security Reports | [Private vulnerability reporting](https://github.com/spearchucker667/venice-media-skill/security) (preferred) or [SECURITY.md](SECURITY.md) |
+| Security Reports | [Private vulnerability reporting](https://github.com/spearchucker667/venice-media-skill/security) (preferred) or [SECURITY.md](../SECURITY.md) |
 
 ---
 

@@ -24,7 +24,7 @@ Do not add the key to a request JSON file.
 Refresh live models:
 
 ```bash
-venice-media models --type all --refresh
+venice-media models --refresh
 ```
 
 The model may have been removed, deprecated, region-restricted, or unavailable to the account.

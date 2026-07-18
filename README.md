@@ -16,13 +16,13 @@
 
 ---
 
-**Venice Media Skill** is a public-ready, host-neutral Agent Skill and Python bridge that lets an existing AI CLI use the Venice API for media generation **without replacing the original host agent**.
+**Venice Media Skill** is a host-neutral Agent Skill and Python bridge that lets an existing AI CLI use the Venice API for media generation **without replacing the original host agent**.
 
 The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or another shell-capable interface&mdash;continues to reason, ask questions, and manage the conversation. This package provides a narrow subprocess boundary for:
 
 - 🎨 **Image generation, editing, multi-edit, and upscaling**
 - 🪟 **Background removal**
-- 🎬 **Video generation, retrieval, editing, extension, and stitching** through supported Venice models
+- 🎬 **Video generation and retrieval**, including model-supported reference, edit, extend, and stitch workflows expressed through `video.generate` inputs and prompts
 - 🔊 **Text-to-speech (TTS)**
 - 🎵 **Music and generated audio**
 - 🎙️ **Audio transcription**
@@ -43,7 +43,7 @@ The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or ano
 | **Prevent Duplicate Spend** | Timeouts return resumable queue IDs, no auto-resubmission |
 | **Quote Before Queued Generation** | Video/audio can return quotes requiring explicit approval |
 | **Model-Aware Clarification** | Host asks only relevant questions based on selected model constraints |
-| **Auditable Outputs** | Every artifact receives JSON metadata sidecar with model, prompt, parameters |
+| **Auditable Outputs** | Artifacts receive redacted JSON metadata sidecars by default; manifests can explicitly disable them |
 
 ---
 
@@ -67,7 +67,7 @@ The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or ano
 ### Prerequisites
 
 - **Python** 3.11 or newer
-- **Venice API Key** - [Get yours from Venice](https://api.venice.ai)
+- **Venice API Key** for online commands - [generate one in Venice settings](https://docs.venice.ai/guides/getting-started/generating-api-key)
 - **Host Agent** - Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or any shell-capable interface
 - **Operating System** - macOS, Linux, WSL, or Windows PowerShell
 
@@ -138,7 +138,7 @@ venice-media install-skill --host kimi --scope user
 .\scripts\install.ps1 -HostName kimi -Scope user
 ```
 
-This creates an isolated virtual environment at `~/.local/share/venice-media-skill/venv` and installs a launcher at `~/.local/bin/venice-media`.
+On macOS/Linux/WSL, this creates an isolated virtual environment under `${XDG_DATA_HOME:-~/.local/share}/venice-media-skill/venv` and a launcher under `${XDG_BIN_HOME:-~/.local/bin}/venice-media`. On Windows, the environment is installed under `%LOCALAPPDATA%\venice-media-skill\venv` and the launcher is `%USERPROFILE%\.local\bin\venice-media.cmd`.
 
 > Ensure `~/.local/bin` is on your `PATH`.
 
@@ -150,20 +150,31 @@ This creates an isolated virtual environment at `~/.local/share/venice-media-ski
 
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
-| `VENICE_API_KEY` | ✅ Yes | Your Venice API key | None |
+| `VENICE_API_KEY` | Online only | Venice API key; never written by the bridge | None |
 | `VENICE_MEDIA_OUTPUT_DIR` | ❌ No | Custom output directory | `./venice-media-output` |
+| `VENICE_MEDIA_CONFIG_DIR` | ❌ No | Override the platform-specific configuration directory | `platformdirs` value |
+| `VENICE_MEDIA_CACHE_DIR` | ❌ No | Override the model-cache directory | `platformdirs` value |
+| `VENICE_MEDIA_STATE_DIR` | ❌ No | Override queue and approval state directory | `platformdirs` value |
+| `VENICE_MEDIA_TIMEOUT` | ❌ No | Positive request timeout in seconds, maximum 86400 | `120` |
 | `VENICE_BASE_URL` | ❌ No | Development-only API base override; invoke the CLI with `--allow-noncanonical-endpoint` for noncanonical HTTPS hosts | `https://api.venice.ai/api/v1` |
 
 ### Configuration Directories
 
-- **Cache:** `~/.cache/venice-media-skill` (models cache, 1-hour TTL)
-- **Config:** `~/.config/venice-media-skill` (configuration files)
-- **State:** `~/.local/state/venice-media-skill` (queue records)
-- **Output:** `./venice-media-output` (generated artifacts and metadata)
+Configuration, cache, and state paths are resolved by [`platformdirs`](https://platformdirs.readthedocs.io/) and therefore vary by operating system. Run `venice-media doctor` to see the exact paths in use. Common Linux defaults are `~/.config/venice-media-skill`, `~/.cache/venice-media-skill`, and `~/.local/state/venice-media-skill`. Output defaults to `./venice-media-output` on every platform unless overridden.
 
 ---
 
 ## 🎯 Usage
+
+### Supported Operations
+
+| Media | Operations |
+|---|---|
+| Images | `image.generate`, `image.edit`, `image.multi_edit`, `image.upscale`, `image.background_remove` |
+| Video | `video.generate`, `video.retrieve` |
+| Audio | `audio.generate`, `audio.retrieve`, `audio.tts`, `audio.transcribe` |
+
+Video editing, extension, stitching, and reference workflows use `video.generate` with typed input media and provider-defined prompt tokens; they are not separate bridge operation names. Query live models before choosing fields because model availability and constraints can change.
 
 ### CLI Commands
 
@@ -239,6 +250,26 @@ venice-media jobs list
 venice-media jobs get QUEUE_ID
 ```
 
+#### Quote and Consent Approval
+
+Paid queued video/audio requests require a hash-bound quote approval before submission:
+
+```bash
+venice-media approve-quote OPERATION PAYLOAD_HASH \
+  --quote quote-response.json \
+  --max-cost USD_LIMIT
+```
+
+When Venice returns a Seedance face-media consent challenge, show the returned policy text to the user and record approval only after explicit confirmation:
+
+```bash
+venice-media approve-consent CHALLENGE_ID \
+  --acknowledge-policy \
+  --max-cost USD_LIMIT
+```
+
+Resubmit the unchanged manifest after either approval. The bridge binds approvals to the canonical payload hash and never automatically resubmits paid jobs.
+
 #### Validation
 
 ```bash
@@ -248,6 +279,8 @@ venice-media validate-openapi
 # Full validation suite
 ./scripts/validate.sh
 ```
+
+The authoritative script runs compilation, Ruff, strict mypy, pytest with the 80% branch-coverage gate, Bandit, dependency audit, environment integrity, wheel/sdist build, OpenAPI validation, request-schema drift, bundled-asset parity, and sdist inspection.
 
 ---
 
@@ -261,6 +294,8 @@ venice-media validate-openapi
 - [🎬 **Media Generation Guide**](docs/media-generation-guide.md) - Complete media workflow documentation
 - [🔌 **Host Integrations**](docs/host-integrations.md) - Kimi Code, Codex, and other agent setup
 - [🔒 **Security & Privacy**](docs/security-and-privacy.md) - Security invariants and best practices
+- [📡 **API Snapshot Policy**](docs/api-reference-snapshot.md) - Provenance and refresh rules for bundled API references
+- [🧾 **Security Post-Mortem**](docs/security-post-mortem-july-2026.md) - Historical remediation record and its evidence boundaries
 - [🐛 **Troubleshooting**](docs/troubleshooting.md) - Common issues and solutions
 - [🚀 **Releasing**](docs/releasing.md) - Release process and automation
 
@@ -306,7 +341,7 @@ The Venice Media Skill maintains a clear separation of concerns:
 │  - Queries live model metadata        │
 │  - Calls Venice REST endpoints        │
 │  - Manages queue state               │
-│  - Writes artifacts & metadata        │
+│  - Writes artifacts & redacted metadata │
 └──────────────────────┬────────────────┘
                         ↓
 ┌─────────────────────────────────────┐

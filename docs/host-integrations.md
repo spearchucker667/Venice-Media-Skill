@@ -57,8 +57,8 @@ Exit codes:
 | 0 | Command completed and emitted a normal status (e.g. `completed`, `queued`, `timed_out`). |
 | 2 | Local configuration, validation, or filesystem failure. |
 | 3 | Venice API error. |
-| 4 | Venice returned `409 needs_consent` for Seedance face-bearing media. Run `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>` once the user reviews the policy text. |
-| 5 | Consent approval recorded but the bridge refused to pair it with the queue request (e.g. hash mismatch). |
+| 4 | Venice returned a raw `409 needs_consent` condition that still requires explicit handling. Surface the provider policy and do not retry automatically. |
+| 5 | A persisted Seedance challenge awaits explicit approval, or Venice accepted a paid queue but its durable local record could not be written. Follow the structured `next_step`; use `approve-consent` for a challenge and retrieve by the returned queue ID after a durable-write failure. |
 | 6 | Quote approval required (paid queued operation). Run `venice-media approve-quote <operation> <payload_hash> --quote <file> --max-cost <USD>` after the user confirms the price. |
 | 7 | Network-safety violation (e.g. absolute URL, scheme-relative path, non-HTTPS, private IP). |
 | 8 | Quote approval hash no longer matches the queued payload. Resubmit a fresh quote. |
