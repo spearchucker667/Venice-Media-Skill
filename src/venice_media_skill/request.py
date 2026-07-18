@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,8 +104,11 @@ class MediaRequest:
         if not source.is_file():
             raise RequestValidationError(f"Request manifest does not exist: {source}")
         try:
-            payload = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = json.loads(
+                source.read_text(encoding="utf-8"),
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise RequestValidationError(f"Unable to parse request manifest {source}: {exc}") from exc
         return cls.from_mapping(payload)
 
@@ -221,11 +225,10 @@ class MediaRequest:
         if (
             self.operation.startswith("video.generate") or self.operation.startswith("audio.generate")
         ) and self.execution.skip_quote:
-            # An explicit skip_quote requires execution.skip_quote_ack=true
-            # AND a stored quote approval ID. We surface this as a runtime
-            # error from the runner; here we just refuse to encode skip + dry_run
-            # silence: skip_quote always requires a quote_approval_id at runtime.
-            pass
+            raise RequestValidationError(
+                "execution.skip_quote is unsupported; paid queued generation always requires "
+                "an explicit hash-bound quote approval."
+            )
 
     # ------------------------------------------------------------------
     # serialization
@@ -291,6 +294,22 @@ def request_json_schema() -> dict[str, Any]:
             props[key] = {"type": "number"}
         for key in rule.get("booleans", set()):
             props[key] = {"type": "boolean"}
+        numeric_constraints: dict[str, dict[str, Any]] = {
+            "variants": {"minimum": 1, "maximum": 4},
+            "scale": {"enum": [2, 4]},
+            "upscale_factor": {"enum": [1, 2, 4]},
+            "width": {"exclusiveMinimum": 0, "maximum": 1280},
+            "height": {"exclusiveMinimum": 0, "maximum": 1280},
+            "lora_strength": {"minimum": 0, "maximum": 100},
+            "seed": {"minimum": -999999999, "maximum": 999999999},
+            "creativity": {"minimum": 0, "maximum": 0.02},
+            "cfg_scale": {"exclusiveMinimum": 0, "maximum": 20},
+            "speed": {"minimum": 0.25, "maximum": 4},
+            "reference_video_total_duration": {"minimum": 0},
+        }
+        for key, constraints in numeric_constraints.items():
+            if key in props:
+                props[key].update(constraints)
         props["queue_id"] = {"type": "string"}
         return {
             "type": "object",
@@ -300,8 +319,44 @@ def request_json_schema() -> dict[str, Any]:
 
     param_shapes: dict[str, dict[str, Any]] = {op: _build_param_shape(op) for op in sorted(SUPPORTED_OPERATIONS)}
 
+    def _input_property(key: str) -> dict[str, Any]:
+        if key in {"images", "reference_images", "reference_videos", "reference_audios", "scene_images"}:
+            maximum = {"images": 3, "reference_images": 9, "reference_videos": 3, "reference_audios": 3}.get(key)
+            schema: dict[str, Any] = {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            }
+            if maximum is not None:
+                schema["maxItems"] = maximum
+            return schema
+        if key == "elements":
+            return {"type": "array", "minItems": 1, "items": {"type": "object"}}
+        return {"type": "string", "minLength": 1}
+
     branches: list[dict[str, Any]] = []
     for op, shape in param_shapes.items():
+        required = ["operation"]
+        if op not in MODELLESS_OPERATIONS:
+            required.append("model")
+        if op in {"image.generate", "image.edit", "image.multi_edit", "video.generate", "audio.tts", "audio.generate"}:
+            required.append("prompt")
+        if op == "video.generate":
+            shape["required"] = ["duration"]
+        if op in {"video.retrieve", "audio.retrieve"}:
+            shape["required"] = ["queue_id"]
+        input_properties = {key: _input_property(key) for key in sorted(_allowed_input_names(op))}
+        inputs_schema: dict[str, Any] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": input_properties,
+        }
+        if op in {"image.upscale", "image.background_remove", "audio.transcribe"}:
+            inputs_schema["required"] = ["audio" if op == "audio.transcribe" else "image"]
+        elif op == "image.multi_edit":
+            inputs_schema["required"] = ["images"]
+        elif op == "image.edit":
+            inputs_schema["anyOf"] = [{"required": ["image"]}, {"required": ["images"]}]
         branches.append(
             {
                 "if": {
@@ -311,7 +366,13 @@ def request_json_schema() -> dict[str, Any]:
                 },
                 "then": {
                     "type": "object",
-                    "properties": {"parameters": shape},
+                    "required": required,
+                    "properties": {
+                        "model": {"type": "string", "minLength": 1},
+                        "prompt": {"type": "string", "minLength": 1},
+                        "parameters": shape,
+                        "inputs": inputs_schema,
+                    },
                 },
             }
         )
@@ -334,7 +395,6 @@ def request_json_schema() -> dict[str, Any]:
             "prompt": {"type": ["string", "null"]},
             "parameters": {
                 "type": "object",
-                "additionalProperties": False,
                 "not": {
                     "anyOf": [{"required": [key]} for key in reserved_keys],
                 },
@@ -433,7 +493,7 @@ def _strict_bool(value: Any, field_name: str) -> bool:
 
 
 def _positive_float(value: Any, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value <= 0:
         raise RequestValidationError(f"{field_name} must be a positive number.")
     return float(value)
 
@@ -458,23 +518,13 @@ def _reject_unknown_keys(mapping: Mapping[str, Any], allowed: frozenset[str] | s
         raise PayloadValidationError(f"Unknown fields: {keys}.")
 
 
-def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
-    # Image operations accept only structured image inputs.
+def _allowed_input_names(operation: str) -> set[str]:
     if operation.startswith("image."):
-        allowed = {"image", "images", "reference_images"}
-        unknown = set(inputs) - allowed
-        if unknown:
-            keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
-            raise PayloadValidationError(f"Unknown fields: {keys}.")
-    elif operation == "audio.transcribe":
-        if "audio" not in inputs:
-            raise PayloadValidationError("audio.transcribe requires inputs.audio.")
-        unknown = set(inputs) - {"audio"}
-        if unknown:
-            keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
-            raise PayloadValidationError(f"Unknown fields: {keys}.")
-    elif operation.startswith("video."):
-        allowed = {
+        return {"image", "images", "reference_images"}
+    if operation == "audio.transcribe":
+        return {"audio"}
+    if operation.startswith("video."):
+        return {
             "image",
             "end_image",
             "audio",
@@ -486,16 +536,19 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
             "elements",
             "queue_id",
         }
-        unknown = set(inputs) - allowed
-        if unknown:
-            keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
-            raise PayloadValidationError(f"Unknown fields: {keys}.")
-    elif operation.startswith("audio."):
-        allowed = {"audio", "queue_id"}
-        unknown = set(inputs) - allowed
-        if unknown:
-            keys = ", ".join(f"inputs.{k}" for k in sorted(unknown))
-            raise PayloadValidationError(f"Unknown fields: {keys}.")
+    if operation.startswith("audio."):
+        return {"audio", "queue_id"}
+    return set()
+
+
+def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
+    allowed = _allowed_input_names(operation)
+    unknown = set(inputs) - allowed
+    if unknown:
+        keys = ", ".join(f"inputs.{key}" for key in sorted(unknown))
+        raise PayloadValidationError(f"Unknown fields: {keys}.")
+    if operation == "audio.transcribe" and "audio" not in inputs:
+        raise PayloadValidationError("audio.transcribe requires inputs.audio.")
 
 
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {
@@ -519,8 +572,6 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
         "numbers": {"cfg_scale"},
         "booleans": {
             "embed_exif_metadata",
-            "return_binary",
-            "safe_mode",
             "enable_web_search",
             "disable_prompt_optimization_thinking",
         },
@@ -528,12 +579,12 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     "image.edit": {
         "strings": {"output_format", "aspect_ratio", "resolution"},
         "integers": set(),
-        "booleans": {"safe_mode"},
+        "booleans": set(),
     },
     "image.multi_edit": {
         "strings": {"output_format", "aspect_ratio", "resolution", "quality"},
         "integers": set(),
-        "booleans": {"safe_mode"},
+        "booleans": set(),
     },
     "image.upscale": {
         "strings": set(),
@@ -571,17 +622,23 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
 }
 
 
+def allowed_parameter_names(operation: str) -> set[str]:
+    """Return the canonical manifest parameter allowlist for an operation."""
+    rule = _PARAM_RULES.get(operation, {})
+    allowed: set[str] = set()
+    for kind in ("strings", "integers", "numbers", "booleans"):
+        allowed.update(rule.get(kind, set()))
+    if operation in {"video.retrieve", "audio.retrieve"}:
+        allowed.add("queue_id")
+    return allowed
+
+
 def _validate_parameters(request: MediaRequest) -> None:
     op = request.operation
     rule = _PARAM_RULES.get(op)
     if rule is None:
         return
-    allowed: set[str] = set()
-    allowed.update(rule.get("strings", set()))
-    allowed.update(rule.get("integers", set()))
-    allowed.update(rule.get("numbers", set()))
-    allowed.update(rule.get("booleans", set()))
-    allowed.add("queue_id")  # always permitted as a queue reference
+    allowed = allowed_parameter_names(op)
     extra = set(request.parameters) - allowed
     if extra:
         keys = ", ".join(f"parameters.{k}" for k in sorted(extra))
@@ -618,7 +675,7 @@ def _validate_parameters(request: MediaRequest) -> None:
         if key not in request.parameters:
             continue
         value = request.parameters[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
             raise PayloadValidationError(f"parameters.{key} must be a number, not {type(value).__name__}.")
         if key == "creativity" and not 0.0 <= float(value) <= 0.02:
             raise PayloadValidationError("parameters.creativity must be in [0.0, 0.02].")

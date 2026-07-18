@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .consent import _acquire_lock, _release_lock
 from .errors import OutputError
+from .output import atomic_write_text
 from .util import redact_data, sha256_text, stable_json, utc_now_iso
 
 
@@ -43,12 +45,17 @@ class JobStore:
         return record
 
     def update(self, queue_id: str, **changes: Any) -> dict[str, Any]:
-        record = self.get(queue_id)
-        sanitized: dict[str, Any] = {key: redact_data(value) for key, value in changes.items()}
-        record.update(sanitized)
-        record["updated_at"] = utc_now_iso()
-        self._write(queue_id, record)
-        return record
+        path = self._path(queue_id)
+        _acquire_lock(path)
+        try:
+            record = self.get(queue_id)
+            sanitized: dict[str, Any] = {key: redact_data(value) for key, value in changes.items()}
+            record.update(sanitized)
+            record["updated_at"] = utc_now_iso()
+            self._write(queue_id, record)
+            return record
+        finally:
+            _release_lock(path)
 
     def get(self, queue_id: str) -> dict[str, Any]:
         path = self._path(queue_id)
@@ -81,6 +88,4 @@ class JobStore:
 
     def _write(self, queue_id: str, record: dict[str, Any]) -> None:
         path = self._path(queue_id)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")

@@ -23,6 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR_NAME = "references"
 
 
+def _tree_manifest(root: Path) -> dict[str, tuple[int, str]]:
+    return {
+        path.relative_to(root).as_posix(): (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _hash_targets(canonical_root: Path, relpaths: tuple[str, ...]) -> tuple[dict[str, str], list[str]]:
     """Return (relpath -> sha256) for files under ``canonical_root``."""
     canonical_hashes: dict[str, str] = {}
@@ -100,6 +108,18 @@ def main() -> int:
             relpaths=skill_relpaths,
         )
     )
+    canonical_manifest = _tree_manifest(REPO_ROOT / "skills" / "venice-media")
+    for mirror in skill_mirrors:
+        mirror_manifest = _tree_manifest(REPO_ROOT / mirror)
+        if mirror_manifest != canonical_manifest:
+            missing = sorted(set(canonical_manifest) - set(mirror_manifest))
+            extra = sorted(set(mirror_manifest) - set(canonical_manifest))
+            changed = sorted(
+                path
+                for path in set(canonical_manifest) & set(mirror_manifest)
+                if canonical_manifest[path] != mirror_manifest[path]
+            )
+            mismatches.append(f"tree drift[{mirror}]: missing={missing}, extra={extra}, changed={changed}")
     if mismatches:
         print(f"verify-bundled-assets: {len(mismatches)} drift item(s)", file=sys.stderr)
         for line in mismatches:

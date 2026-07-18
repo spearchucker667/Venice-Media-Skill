@@ -26,6 +26,8 @@
             "type": "string"
           },
           "speed": {
+            "maximum": 4,
+            "minimum": 0.25,
             "type": "number"
           },
           "voice": {
@@ -41,6 +43,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "queue_id"
+        ],
         "type": "object"
       },
       "audio.transcribe": {
@@ -71,6 +76,8 @@
             "type": "string"
           },
           "speed": {
+            "maximum": 4,
+            "minimum": 0.25,
             "type": "number"
           },
           "voice": {
@@ -102,9 +109,6 @@
           },
           "resolution": {
             "type": "string"
-          },
-          "safe_mode": {
-            "type": "boolean"
           }
         },
         "type": "object"
@@ -116,6 +120,8 @@
             "type": "string"
           },
           "cfg_scale": {
+            "exclusiveMinimum": 0,
+            "maximum": 20,
             "type": "number"
           },
           "disable_prompt_optimization_thinking": {
@@ -131,9 +137,13 @@
             "type": "string"
           },
           "height": {
+            "exclusiveMinimum": 0,
+            "maximum": 1280,
             "type": "integer"
           },
           "lora_strength": {
+            "maximum": 100,
+            "minimum": 0,
             "type": "integer"
           },
           "negative_prompt": {
@@ -148,13 +158,9 @@
           "resolution": {
             "type": "string"
           },
-          "return_binary": {
-            "type": "boolean"
-          },
-          "safe_mode": {
-            "type": "boolean"
-          },
           "seed": {
+            "maximum": 999999999,
+            "minimum": -999999999,
             "type": "integer"
           },
           "steps": {
@@ -164,9 +170,13 @@
             "type": "string"
           },
           "variants": {
+            "maximum": 4,
+            "minimum": 1,
             "type": "integer"
           },
           "width": {
+            "exclusiveMinimum": 0,
+            "maximum": 1280,
             "type": "integer"
           }
         },
@@ -189,9 +199,6 @@
           },
           "resolution": {
             "type": "string"
-          },
-          "safe_mode": {
-            "type": "boolean"
           }
         },
         "type": "object"
@@ -200,12 +207,18 @@
         "additionalProperties": false,
         "properties": {
           "creativity": {
+            "maximum": 0.02,
+            "minimum": 0,
             "type": "number"
           },
           "queue_id": {
             "type": "string"
           },
           "scale": {
+            "enum": [
+              2,
+              4
+            ],
             "type": "integer"
           }
         },
@@ -230,15 +243,24 @@
             "type": "string"
           },
           "reference_video_total_duration": {
+            "minimum": 0,
             "type": "number"
           },
           "resolution": {
             "type": "string"
           },
           "upscale_factor": {
+            "enum": [
+              1,
+              2,
+              4
+            ],
             "type": "integer"
           }
         },
+        "required": [
+          "duration"
+        ],
         "type": "object"
       },
       "video.retrieve": {
@@ -248,6 +270,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "queue_id"
+        ],
         "type": "object"
       }
     }
@@ -270,6 +295,24 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue_id": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -295,6 +338,8 @@
                 "type": "string"
               },
               "speed": {
+                "maximum": 4,
+                "minimum": 0.25,
                 "type": "number"
               },
               "voice": {
@@ -302,8 +347,17 @@
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -321,6 +375,24 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue_id": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -328,9 +400,19 @@
                 "type": "string"
               }
             },
+            "required": [
+              "queue_id"
+            ],
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation"
+        ],
         "type": "object"
       }
     },
@@ -348,6 +430,23 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "audio"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -365,8 +464,16 @@
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model"
+        ],
         "type": "object"
       }
     },
@@ -384,6 +491,24 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue_id": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -394,6 +519,8 @@
                 "type": "string"
               },
               "speed": {
+                "maximum": 4,
+                "minimum": 0.25,
                 "type": "number"
               },
               "voice": {
@@ -401,8 +528,17 @@
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -420,6 +556,41 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "image"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -428,8 +599,15 @@
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation"
+        ],
         "type": "object"
       }
     },
@@ -447,6 +625,50 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "anyOf": [
+              {
+                "required": [
+                  "image"
+                ]
+              },
+              {
+                "required": [
+                  "images"
+                ]
+              }
+            ],
+            "properties": {
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -461,14 +683,20 @@
               },
               "resolution": {
                 "type": "string"
-              },
-              "safe_mode": {
-                "type": "boolean"
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -486,6 +714,38 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -493,6 +753,8 @@
                 "type": "string"
               },
               "cfg_scale": {
+                "exclusiveMinimum": 0,
+                "maximum": 20,
                 "type": "number"
               },
               "disable_prompt_optimization_thinking": {
@@ -508,9 +770,13 @@
                 "type": "string"
               },
               "height": {
+                "exclusiveMinimum": 0,
+                "maximum": 1280,
                 "type": "integer"
               },
               "lora_strength": {
+                "maximum": 100,
+                "minimum": 0,
                 "type": "integer"
               },
               "negative_prompt": {
@@ -525,13 +791,9 @@
               "resolution": {
                 "type": "string"
               },
-              "return_binary": {
-                "type": "boolean"
-              },
-              "safe_mode": {
-                "type": "boolean"
-              },
               "seed": {
+                "maximum": 999999999,
+                "minimum": -999999999,
                 "type": "integer"
               },
               "steps": {
@@ -541,15 +803,28 @@
                 "type": "string"
               },
               "variants": {
+                "maximum": 4,
+                "minimum": 1,
                 "type": "integer"
               },
               "width": {
+                "exclusiveMinimum": 0,
+                "maximum": 1280,
                 "type": "integer"
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -567,6 +842,41 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "images"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -584,14 +894,20 @@
               },
               "resolution": {
                 "type": "string"
-              },
-              "safe_mode": {
-                "type": "boolean"
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -609,22 +925,70 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "image"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
               "creativity": {
+                "maximum": 0.02,
+                "minimum": 0,
                 "type": "number"
               },
               "queue_id": {
                 "type": "string"
               },
               "scale": {
+                "enum": [
+                  2,
+                  4
+                ],
                 "type": "integer"
               }
             },
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation"
+        ],
         "type": "object"
       }
     },
@@ -642,6 +1006,78 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "elements": {
+                "items": {
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "end_image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reference_audios": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_videos": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "scene_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "video": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -661,18 +1097,36 @@
                 "type": "string"
               },
               "reference_video_total_duration": {
+                "minimum": 0,
                 "type": "number"
               },
               "resolution": {
                 "type": "string"
               },
               "upscale_factor": {
+                "enum": [
+                  1,
+                  2,
+                  4
+                ],
                 "type": "integer"
               }
             },
+            "required": [
+              "duration"
+            ],
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation",
+          "model",
+          "prompt"
+        ],
         "type": "object"
       }
     },
@@ -690,6 +1144,78 @@
       },
       "then": {
         "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "elements": {
+                "items": {
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "end_image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "image": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "queue_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reference_audios": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "minItems": 1,
+                "type": "array"
+              },
+              "reference_videos": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "scene_images": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "video": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
           "parameters": {
             "additionalProperties": false,
             "properties": {
@@ -697,9 +1223,19 @@
                 "type": "string"
               }
             },
+            "required": [
+              "queue_id"
+            ],
             "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
           }
         },
+        "required": [
+          "operation"
+        ],
         "type": "object"
       }
     }
@@ -807,7 +1343,6 @@
       "type": "object"
     },
     "parameters": {
-      "additionalProperties": false,
       "not": {
         "anyOf": [
           {

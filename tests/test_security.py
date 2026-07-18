@@ -526,22 +526,23 @@ class TestConsentChallengeStateMachine:
 class TestQuoteApprovalBinding:
     def test_quote_required_for_queued_video(self, tmp_path: Path) -> None:
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        payload_hash = "d" * 64
         approval = store.record(
             operation="video.generate",
-            payload_hash="hh",
+            payload_hash=payload_hash,
             quote_response={"quote": 0.5},
             max_cost=1.0,
         )
         consumed = store.consume(
             approval_id=approval.approval_id,
-            current_payload_hash="hh",
+            current_payload_hash=payload_hash,
             max_observed_cost=0.4,
         )
-        assert consumed.payload_hash == "hh"
+        assert consumed.payload_hash == payload_hash
         with pytest.raises(ConsentApprovalMissing):
             store.consume(
                 approval_id=approval.approval_id,
-                current_payload_hash="hh",
+                current_payload_hash=payload_hash,
                 max_observed_cost=0.4,
             )
 
@@ -549,16 +550,17 @@ class TestQuoteApprovalBinding:
         from venice_media_skill.errors import QuoteApprovalMismatch
 
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        payload_hash = "e" * 64
         approval = store.record(
             operation="video.generate",
-            payload_hash="hh",
+            payload_hash=payload_hash,
             quote_response={"quote": 0.5},
             max_cost=1.0,
         )
         with pytest.raises(QuoteApprovalMismatch):
             store.consume(
                 approval_id=approval.approval_id,
-                current_payload_hash="hh-other",
+                current_payload_hash="f" * 64,
                 max_observed_cost=0.4,
             )
 
@@ -566,16 +568,17 @@ class TestQuoteApprovalBinding:
         from venice_media_skill.errors import ConsentApprovalMissing
 
         store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+        payload_hash = "1" * 64
         approval = store.record(
             operation="video.generate",
-            payload_hash="hh",
+            payload_hash=payload_hash,
             quote_response={"quote": 0.5},
             max_cost=1.0,
         )
         with pytest.raises(ConsentApprovalMissing):
             store.consume(
                 approval_id=approval.approval_id,
-                current_payload_hash="hh",
+                current_payload_hash=payload_hash,
                 max_observed_cost=5.0,
             )
 
@@ -824,8 +827,9 @@ class TestPublicHttpError:
 class TestRequestSchemaShape:
     def test_schema_declares_strict_parameters(self) -> None:
         schema = request_json_schema()
-        params = schema["properties"]["parameters"]
-        assert params["additionalProperties"] is False
+        shapes = schema["$defs"]["parameterShapes"]
+        assert shapes
+        assert all(shape["additionalProperties"] is False for shape in shapes.values())
 
 
 # ---------------------------------------------------------------------------

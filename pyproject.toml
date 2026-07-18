@@ -32,6 +32,7 @@ classifiers = [
 dependencies = [
   "httpx>=0.28.1,<1",
   "jsonschema>=4.23.0,<5",
+  "openapi-spec-validator>=0.7.1,<1",
   "platformdirs>=4.3.6,<5",
   "PyYAML>=6.0.2,<7",
 ]
@@ -43,6 +44,8 @@ dev = [
   "pytest>=8.3.5",
   "pytest-cov>=6.0.0",
   "ruff>=0.11.0",
+  "bandit>=1.8.3",
+  "pip-audit>=2.8.0",
   "types-jsonschema>=4.23.0,<5",
   "types-PyYAML>=6.0.12.20241230",
 ]

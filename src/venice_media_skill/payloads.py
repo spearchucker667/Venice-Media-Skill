@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import PayloadValidationError, ReservedParameterError
-from .request import MediaRequest
+from .request import MediaRequest, allowed_parameter_names
 from .reserved import RESERVED_PARAMETERS, RESERVED_PROVIDER_KEYS, RESERVED_TOP_LEVEL_KEYS
-from .util import normalize_media_input, stable_json
+from .util import normalize_media_input, sha256_file, stable_json
 
 # Re-exported for any caller that already imports from this module.
 __all__ = [
@@ -122,7 +122,7 @@ def _canonicalize_input(value: str) -> str:
         # If the file is not present we still produce a stable hash from the
         # original reference — the runner will surface a clearer error later.
         return sha256_hex(value.encode("utf-8"))
-    return sha256_hex(path.read_bytes())
+    return sha256_file(path)
 
 
 def sha256_hex(data: bytes) -> str:
@@ -155,15 +155,7 @@ def build_image_generate(request: MediaRequest) -> CanonicalPayload:
     """``POST /image/generate`` - canonical provider body."""
     if request.model is None or request.prompt is None:
         raise ValueError("image.generate requires model and prompt")
-    allowed = {
-        "format",
-        "variants",
-        "negative_prompt",
-        "seed",
-        "style",
-        "aspect_ratio",
-        "resolution",
-    }
+    allowed = allowed_parameter_names("image.generate")
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {
         "model": request.model,
@@ -185,7 +177,7 @@ def build_image_edit(request: MediaRequest) -> CanonicalPayload:
     """``POST /image/edit`` - canonical provider body."""
     if request.model is None or request.prompt is None:
         raise ValueError("image.edit requires model and prompt")
-    allowed = {"aspect_ratio", "resolution", "output_format", "style"}
+    allowed = allowed_parameter_names("image.edit")
     body = _copy_only(request.parameters, allowed)
     image = _require_single_string_input(request, "image")
     payload: dict[str, Any] = {
@@ -206,7 +198,7 @@ def build_image_multi_edit(request: MediaRequest) -> CanonicalPayload:
     """``POST /image/multi-edit`` - canonical provider body."""
     if request.model is None or request.prompt is None:
         raise ValueError("image.multi_edit requires model and prompt")
-    allowed = {"aspect_ratio", "resolution", "output_format", "quality"}
+    allowed = allowed_parameter_names("image.multi_edit")
     body = _copy_only(request.parameters, allowed)
     images = _require_string_list_input(request, "images", min_items=1, max_items=3)
     payload: dict[str, Any] = {
@@ -222,7 +214,7 @@ def build_image_multi_edit(request: MediaRequest) -> CanonicalPayload:
 
 def build_image_upscale(request: MediaRequest) -> CanonicalPayload:
     """``POST /image/upscale`` - canonical provider body."""
-    allowed = {"creativity", "scale"}
+    allowed = allowed_parameter_names("image.upscale")
     body = _copy_only(request.parameters, allowed)
     image = _require_single_string_input(request, "image")
     payload: dict[str, Any] = {
@@ -248,7 +240,7 @@ def build_tts(request: MediaRequest) -> CanonicalPayload:
     """``POST /audio/speech`` - canonical provider body."""
     if request.model is None or request.prompt is None:
         raise ValueError("audio.tts requires model and prompt")
-    allowed = {"voice", "response_format", "speed"}
+    allowed = allowed_parameter_names("audio.tts")
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {
         "model": request.model,
@@ -268,7 +260,7 @@ def build_transcribe(request: MediaRequest) -> CanonicalPayload:
     """
     if request.model is None:
         raise ValueError("audio.transcribe requires model")
-    allowed = {"response_format", "timestamps", "language"}
+    allowed = allowed_parameter_names("audio.transcribe")
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {"model": request.model}
     payload["response_format"] = str(body.get("response_format", "json"))
@@ -282,17 +274,7 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
     """``POST /video/queue`` - canonical provider body for video."""
     if request.model is None or request.prompt is None:
         raise ValueError("video.generate requires model and prompt")
-    allowed = {
-        "duration",
-        "aspect_ratio",
-        "resolution",
-        "upscale_factor",
-        "audio",
-        "reference_video_total_duration",
-        "seed",
-        "negative_prompt",
-        "style",
-    }
+    allowed = allowed_parameter_names("video.generate")
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
     payload.update(body)
@@ -364,15 +346,7 @@ def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
     """``POST /audio/queue`` - canonical provider body for audio generation."""
     if request.model is None or request.prompt is None:
         raise ValueError("audio.generate requires model and prompt")
-    allowed = {
-        "lyrics_prompt",
-        "duration_seconds",
-        "language_code",
-        "voice",
-        "force_instrumental",
-        "lyrics_optimizer",
-        "speed",
-    }
+    allowed = allowed_parameter_names("audio.generate")
     body = _copy_only(request.parameters, allowed)
     payload: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
     payload.update(body)

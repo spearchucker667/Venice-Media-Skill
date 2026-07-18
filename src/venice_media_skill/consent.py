@@ -18,7 +18,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
+import re
 import secrets
 import socket
 import time
@@ -26,6 +28,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final, cast
+
+from platformdirs import user_state_path
 
 from .errors import (
     ConsentApprovalMissing,
@@ -35,9 +39,7 @@ from .errors import (
 )
 from .util import utc_now_iso
 
-_LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or (
-    "/tmp/venice-media-locks" if Path("/tmp").exists() else os.environ.get("TEMP", str(Path.home()))
-)
+_LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or str(user_state_path("venice-media-skill") / "locks")
 
 # How long a lock can sit untouched before we attempt stale-recovery.
 _LOCK_STALE_AFTER_SECONDS: Final[float] = 30 * 60
@@ -80,16 +82,16 @@ def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> 
     recovered when the owning process no longer exists.
     """
     lock_path = _get_lock_path(path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     host = socket.gethostname() if hasattr(socket, "gethostname") else "unknown"
     pid = os.getpid()
     body = _lock_record_body(host, pid).encode("utf-8")
-    start = time.monotonic()
+    start = time.perf_counter()
     stale_warned = False
     while True:
         try:
             if exclusive:
-                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(body)
                 return
@@ -103,7 +105,7 @@ def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> 
         if exclusive and lock_path.exists() and _try_stale_recovery(lock_path):
             stale_warned = True
             continue
-        if time.monotonic() - start > timeout:
+        if time.perf_counter() - start > timeout:
             raise TimeoutError(
                 f"Could not acquire lock on {path} within {timeout}s "
                 f"(host={host}, pid={pid}, stale_warning={stale_warned})"
@@ -124,8 +126,12 @@ def _try_stale_recovery(lock_path: Path) -> bool:
         return False
     record = _parse_lock_record(body)
     if record is None:
-        # Unparseable lock records always trigger recovery — preserve
-        # a snapshot only when the contents cannot be parsed at all.
+        try:
+            age = time.time() - lock_path.stat().st_mtime
+        except OSError:
+            return False
+        if age < _LOCK_STALE_AFTER_SECONDS:
+            return False
         with contextlib.suppress(OSError):
             lock_path.unlink()
         return True
@@ -278,11 +284,11 @@ class ConsentStore:
         return challenge
 
     def load_challenge(self, challenge_id: str) -> ConsentChallenge | None:
-        _acquire_lock(self.path, exclusive=False)
+        _acquire_lock(self.path)
         try:
             data = self._read()
         finally:
-            _release_lock(self.path, exclusive=False)
+            _release_lock(self.path)
         payload = data.get("challenges", {}).get(challenge_id)
         if payload is None:
             return None
@@ -305,6 +311,12 @@ class ConsentStore:
             raise ConsentApprovalMissing("unknown")
         if not acknowledge_policy:
             raise ConsentApprovalMissing("policy-unacknowledged")
+        if confirmed_max_cost is not None and (
+            isinstance(confirmed_max_cost, bool)
+            or not math.isfinite(float(confirmed_max_cost))
+            or confirmed_max_cost < 0
+        ):
+            raise ConsentApprovalMissing("max_cost must be a finite non-negative number")
         approval = ConsentApproval(
             challenge_id=challenge_id,
             approved_at=utc_now_iso(),
@@ -324,11 +336,11 @@ class ConsentStore:
         return approval
 
     def approval_for(self, payload_hash: str) -> ConsentApproval | None:
-        _acquire_lock(self.path, exclusive=False)
+        _acquire_lock(self.path)
         try:
             data = self._read()
         finally:
-            _release_lock(self.path, exclusive=False)
+            _release_lock(self.path)
         approvals = data.get("approvals", {})
         for entry in approvals.values():
             if entry.get("payload_hash") != payload_hash:
@@ -337,6 +349,29 @@ class ConsentStore:
                 continue
             return ConsentApproval(**entry)
         return None
+
+    def consume(self, payload_hash: str, *, observed_cost: float | None) -> ConsentApproval | None:
+        """Atomically claim one matching consent approval exactly once."""
+        _acquire_lock(self.path, exclusive=True)
+        try:
+            data = self._read()
+            approvals = data.get("approvals", {})
+            for challenge_id, entry in list(approvals.items()):
+                if entry.get("payload_hash") != payload_hash or _is_expired(entry.get("expires_at", "")):
+                    continue
+                approval = ConsentApproval(**entry)
+                if observed_cost is not None and (
+                    not math.isfinite(observed_cost)
+                    or observed_cost < 0
+                    or (approval.max_cost is not None and observed_cost > approval.max_cost)
+                ):
+                    raise ConsentApprovalMissing("consent approval cost limit exceeded")
+                del approvals[challenge_id]
+                self._write(data)
+                return approval
+            return None
+        finally:
+            _release_lock(self.path, exclusive=True)
 
 
 class QuoteApprovalStore:
@@ -356,6 +391,18 @@ class QuoteApprovalStore:
         quote_response: Mapping[str, Any],
         max_cost: float,
     ) -> QuoteApproval:
+        if operation not in {"video.generate", "audio.generate"}:
+            raise ValueError(f"unsupported quote operation: {operation}")
+        if not re.fullmatch(r"[0-9a-f]{64}", payload_hash):
+            raise ValueError("payload_hash must be a lowercase 64-character SHA-256 hex digest")
+        quoted_operation = quote_response.get("operation")
+        if quoted_operation is not None and quoted_operation != operation:
+            raise ValueError("quote response operation does not match the approval operation")
+        observed = quote_cost(quote_response)
+        if observed is None:
+            raise ValueError("quote response must contain a finite non-negative numeric quote")
+        if isinstance(max_cost, bool) or not math.isfinite(float(max_cost)) or max_cost < 0:
+            raise ValueError("max_cost must be a finite non-negative number")
         approval = QuoteApproval(
             approval_id=new_approval_id(),
             operation=operation,
@@ -403,11 +450,11 @@ class QuoteApprovalStore:
         return approval
 
     def resolve(self, payload_hash: str) -> QuoteApproval | None:
-        _acquire_lock(self.path, exclusive=False)
+        _acquire_lock(self.path)
         try:
             data = self._read()
         finally:
-            _release_lock(self.path, exclusive=False)
+            _release_lock(self.path)
         for entry in data.values():
             if entry.get("payload_hash") != payload_hash:
                 continue
@@ -493,7 +540,7 @@ def build_consent_object(policy_version: str) -> dict[str, Any]:
 
 def quote_cost(quote_response: Mapping[str, Any]) -> float | None:
     raw = quote_response.get("quote")
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(float(raw)) and float(raw) >= 0:
         return float(raw)
     return None
 

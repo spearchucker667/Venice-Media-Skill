@@ -152,7 +152,7 @@ This creates an isolated virtual environment at `~/.local/share/venice-media-ski
 |----------|----------|-------------|---------|
 | `VENICE_API_KEY` | ✅ Yes | Your Venice API key | None |
 | `VENICE_MEDIA_OUTPUT_DIR` | ❌ No | Custom output directory | `./venice-media-output` |
-| `VENICE_API_BASE` | ❌ No | Custom API base URL | `https://api.venice.ai/api/v1` |
+| `VENICE_BASE_URL` | ❌ No | Development-only API base override; invoke the CLI with `--allow-noncanonical-endpoint` for noncanonical HTTPS hosts | `https://api.venice.ai/api/v1` |
 
 ### Configuration Directories
 
@@ -421,8 +421,8 @@ This project is licensed under the **MIT License** - see [LICENSE](LICENSE) for 
   "model": "venice-sd35",
   "prompt": "A cinematic sunset over a glass-calm ocean",
   "parameters": {
-    "width": 1024,
-    "height": 1024,
+    "aspect_ratio": "1:1",
+    "resolution": "1K",
     "negative_prompt": "text, logos, artifacts",
     "format": "webp"
   },

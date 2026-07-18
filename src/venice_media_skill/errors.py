@@ -231,6 +231,17 @@ class ApiError(VeniceMediaError):
 
 
 @dataclass(slots=True)
+class TransportError(VeniceMediaError):
+    """DNS, connection, TLS, timeout, or other HTTP transport failure."""
+
+    message: str
+    cause: str
+
+    def __str__(self) -> str:
+        return f"Venice API transport failed: {self.message} (cause={self.cause})"
+
+
+@dataclass(slots=True)
 class ConsentRequired(VeniceMediaError):
     """Seedance detected face media and requires an explicit legal attestation.
 

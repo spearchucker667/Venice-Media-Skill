@@ -263,12 +263,9 @@ class VeniceClient:
                 files=files,
             )
         except httpx.HTTPError as exc:
-            raise ApiError(
-                status_code=0,
-                message=f"Transport error: {exc}",
-                payload=None,
-                cause=type(exc).__name__,
-            ) from exc
+            from .errors import TransportError
+
+            raise TransportError(message=str(exc), cause=type(exc).__name__) from exc
 
         # ``follow_redirects=False`` means we may have a 3xx status that
         # the user explicitly did not intend. Surface it as an error.

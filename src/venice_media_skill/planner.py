@@ -291,7 +291,7 @@ def _questions_for_model(
         if constraints.get("supports_force_instrumental"):
             questions.append(
                 _question(
-                    "parameters.instrumental",
+                    "parameters.force_instrumental",
                     False,
                     "Instrumental only?",
                     [True, False],

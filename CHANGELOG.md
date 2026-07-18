@@ -31,7 +31,7 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 | Consent + quote stores | New modules `consent.py` and `approval.py` persist challenges and approvals with hash binding. |
 | Fail-closed downloads | `VeniceClient.download_public_url` no longer follows redirects and validates every hop before issuing the next request. |
 | `reserved.py` constants | Shared set of reserved / transport-control keys that both `request.py` and `payloads.py` consult. |
-| `planning` fields split | Planner now returns `{parameters: {...}, execution: {...}}` keeping provider defaults and execution policy clearly separated. Music plans emit `parameters.lyrics_prompt` (canonical) and `parameters.instrumental`, not the deprecated aliases. |
+| `planning` fields split | Planner now returns `{parameters: {...}, execution: {...}}` keeping provider defaults and execution policy clearly separated. Music plans emit the canonical `parameters.lyrics_prompt` and `parameters.force_instrumental` fields. |
 
 ### 🧪 Tests
 

@@ -94,8 +94,8 @@ Minimal image example:
   "model": "MODEL_FROM_LIVE_CATALOG",
   "prompt": "A cinematic sunset over a quiet ocean",
   "parameters": {
-    "width": 1024,
-    "height": 1024,
+    "aspect_ratio": "1:1",
+    "resolution": "1K",
     "negative_prompt": "",
     "variants": 1,
     "format": "webp"
@@ -110,7 +110,7 @@ Minimal image example:
 }
 ```
 
-Do not put `safe_mode` or `hide_watermark` in the manifest unless overriding package defaults. The bridge injects `safe_mode=false` and `hide_watermark=true` for image generation and `safe_mode=false` for image editing.
+Do not put `safe_mode`, `hide_watermark`, or `return_binary` in the manifest. These are bridge-controlled fields: the bridge injects `safe_mode=false` and `hide_watermark=true` for image generation, selects binary return behavior from `variants`, and injects `safe_mode=false` for image editing.
 
 Before a charged queued request, set:
 

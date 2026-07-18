@@ -37,6 +37,7 @@ from .output import ArtifactWriter
 from .request import MediaRequest
 from .util import (
     redact_data,
+    sha256_file,
     timestamp_slug,
     utc_now_iso,
 )
@@ -107,7 +108,7 @@ class MediaRunner:
         canonical = payloads.build_image_generate(request)
         if request.execution.dry_run:
             return self._dry_run(request, canonical)
-        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        response = self._request_preserving_consent(canonical.endpoint, dict(canonical.payload))
         maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
         if maybe_consent:
             return maybe_consent
@@ -117,7 +118,7 @@ class MediaRunner:
         canonical = payloads.build_image_edit(request)
         if request.execution.dry_run:
             return self._dry_run(request, canonical)
-        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        response = self._request_preserving_consent(canonical.endpoint, dict(canonical.payload))
         maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
         if maybe_consent:
             return maybe_consent
@@ -127,7 +128,7 @@ class MediaRunner:
         canonical = payloads.build_image_multi_edit(request)
         if request.execution.dry_run:
             return self._dry_run(request, canonical)
-        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        response = self._request_preserving_consent(canonical.endpoint, dict(canonical.payload))
         maybe_consent = self._record_consent_if_needed(canonical, response, media_kind="image")
         if maybe_consent:
             return maybe_consent
@@ -246,13 +247,17 @@ class MediaRunner:
         consent_block = self._consume_consent_approval(
             request=request,
             canonical=queue_canonical,
+            observed_cost=quote_cost(quote_response),
         )
 
         queue_body = dict(queue_canonical.payload)
         if consent_block is not None:
             payloads.append_consents(consent_block, queue_body)
 
-        queued = self.client.request("POST", queue_canonical.endpoint, json_body=queue_body)
+        queued = self._request_preserving_consent(queue_canonical.endpoint, queue_body)
+        maybe_consent = self._record_consent_if_needed(queue_canonical, queued, media_kind=media_type)
+        if maybe_consent:
+            return maybe_consent
         if not isinstance(queued.json_data, dict):
             raise OutputError(f"{queue_canonical.endpoint} returned an unexpected response.")
         queue_id = queued.json_data.get("queue_id")
@@ -374,7 +379,13 @@ class MediaRunner:
                 if current_download_url != download_url:
                     self.jobs.update(queue_id, download_url=current_download_url)
                 # Stream large media directly to disk to avoid buffering in RAM
-                destination = self.writer.default_output_dir / f"{media_type}-{queue_id}"
+                staging_dir = (
+                    Path(request.output.directory).expanduser()
+                    if request.output.directory
+                    else self.writer.default_output_dir
+                )
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                destination = staging_dir / f".{media_type}-{queue_id}.download"
                 downloaded = self.client.download_public_file(
                     current_download_url,
                     destination=destination,
@@ -608,6 +619,18 @@ class MediaRunner:
 
     # -- consent + quote gates ----------------------------------------------
 
+    def _request_preserving_consent(self, endpoint: str, body: dict[str, Any]) -> ApiResponse:
+        """Convert only provider ``409 needs_consent`` into a runner-visible response."""
+        try:
+            return self.client.request("POST", endpoint, json_body=body)
+        except ConsentRequired as exc:
+            return ApiResponse(
+                status_code=409,
+                content_type="application/json",
+                headers={},
+                json_data=exc.payload,
+            )
+
     def _record_consent_if_needed(
         self,
         canonical: payloads.CanonicalPayload,
@@ -654,6 +677,7 @@ class MediaRunner:
         *,
         request: MediaRequest,
         canonical: payloads.CanonicalPayload,
+        observed_cost: float | None = None,
     ) -> dict[str, Any] | None:
         """Return a consent block only when an approval exists for ``canonical.hash``.
 
@@ -664,7 +688,7 @@ class MediaRunner:
         """
         if self.consent_store is None:
             return None
-        approval = self.consent_store.approval_for(canonical.hash)
+        approval = self.consent_store.consume(canonical.hash, observed_cost=observed_cost)
         if approval is None:
             return None
         # Provider expects exactly:
@@ -807,7 +831,7 @@ def _summarize_inputs(request: MediaRequest) -> list[dict[str, Any]]:
                             "kind": "local_media",
                             "path_hint": path.name,
                             "bytes": path.stat().st_size,
-                            "sha256": payloads.sha256_hex(path.read_bytes()),
+                            "sha256": sha256_file(path),
                         }
                     )
                 else:

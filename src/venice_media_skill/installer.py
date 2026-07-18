@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -51,10 +52,27 @@ def install_skill(
     source = files("venice_media_skill").joinpath("assets", "skill")
     installed: list[str] = []
     for destination in destinations:
-        if destination.exists():
-            shutil.rmtree(destination)
+        if destination.is_symlink():
+            raise ConfigurationError(f"Refusing to replace symlinked skill destination: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        _copy_resource_tree(source, destination)
+        staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+        backup = destination.with_name(f".{destination.name}.rollback")
+        try:
+            _copy_resource_tree(source, staging)
+            if not (staging / "SKILL.md").is_file():
+                raise ConfigurationError("Bundled skill is missing required SKILL.md")
+            if backup.exists():
+                shutil.rmtree(backup)
+            if destination.exists():
+                os.replace(destination, backup)
+            os.replace(staging, destination)
+            if backup.exists():
+                shutil.rmtree(backup)
+        except Exception:
+            if not destination.exists() and backup.exists():
+                os.replace(backup, destination)
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         installed.append(str(destination.resolve()))
 
     return {

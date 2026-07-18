@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +55,10 @@ class Settings:
                 str(config.get("output_dir", Path.cwd() / "venice-media-output")),
             )
         ).expanduser()
-        timeout_seconds = float(env.get("VENICE_MEDIA_TIMEOUT", config.get("timeout_seconds", 120)))
+        try:
+            timeout_seconds = float(env.get("VENICE_MEDIA_TIMEOUT", config.get("timeout_seconds", 120)))
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError("VENICE_MEDIA_TIMEOUT/timeout_seconds must be a finite number.") from exc
 
         # Validate paths - prevent path traversal and ensure they're within reasonable bounds
         for name, path in [
@@ -66,7 +70,7 @@ class Settings:
             _validate_safe_path(path, name)
 
         # Validate timeout
-        if timeout_seconds <= 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ConfigurationError(f"timeout_seconds must be positive, got {timeout_seconds}")
         if timeout_seconds > 86400:  # 24 hours max
             raise ConfigurationError(f"timeout_seconds too large (max 86400), got {timeout_seconds}")
@@ -162,4 +166,8 @@ def _load_json_config(path: Path) -> dict[str, Any]:
     forbidden = {"api_key", "token", "authorization", "venice_api_key"}.intersection(key.lower() for key in payload)
     if forbidden:
         raise ConfigurationError(f"Config file {path} contains a credential-like field. Use VENICE_API_KEY instead.")
+    supported = {"base_url", "output_dir", "timeout_seconds"}
+    unknown = set(payload) - supported
+    if unknown:
+        raise ConfigurationError(f"Unsupported config key(s): {', '.join(sorted(unknown))}")
     return payload

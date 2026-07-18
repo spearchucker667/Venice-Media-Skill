@@ -31,8 +31,8 @@ _FLAC_SIG: Final[tuple[bytes, ...]] = (b"fLaC",)
 _OGG_SIG: Final[tuple[bytes, ...]] = (b"OggS",)
 _OPUS_SIG: Final[tuple[bytes, ...]] = (b"OpusHead",)
 _AAC_SIG: Final[tuple[bytes, ...]] = (b"\xff\xf1", b"\xff\xf9")
-_WAV_RIFF_WINDOW: Final[tuple[int, int, bytes]] = (0, 12, b"RIFF\x00\x00\x00\x00WAVE")
-_WEBP_RIFF_WINDOW: Final[tuple[int, int, bytes]] = (0, 12, b"RIFF\x00\x00\x00\x00WEBP")
+_WAV_RIFF_WINDOW: Final[tuple[int, int, bytes]] = (8, 12, b"WAVE")
+_WEBP_RIFF_WINDOW: Final[tuple[int, int, bytes]] = (8, 12, b"WEBP")
 _MP4_CHECK: Final[tuple[int, int, bytes]] = (4, 8, b"ftyp")
 _AVI_CHECK: Final[tuple[int, int, bytes]] = (8, 12, b"AVI ")
 
@@ -55,6 +55,15 @@ def sha256_text(text: str) -> str:
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a file incrementally without duplicating it in memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def redact_text(value: str) -> str:
@@ -92,6 +101,13 @@ def path_to_data_url(path_value: str | Path, *, max_bytes: int = 50 * 1024 * 102
     if size > max_bytes:
         raise RequestValidationError(
             f"Input file is {size} bytes, exceeding the bridge limit of {max_bytes} bytes: {path}"
+        )
+    encoded_size = 4 * ((size + 2) // 3)
+    json_body_limit = 35 * 1024 * 1024
+    if encoded_size > json_body_limit:
+        raise RequestValidationError(
+            f"Base64 encoding {path} would require about {encoded_size} bytes and exceed the "
+            f"{json_body_limit}-byte queue JSON limit; use a supported public URL instead."
         )
     mime_type = mimetypes.guess_type(path.name)[0]
     data = path.read_bytes()
@@ -180,9 +196,9 @@ def detected_content_type(data: bytes) -> str | None:
     for sig in _GIF_SIG:
         if data.startswith(sig):
             return "image/gif"
-    if _matches_window(data, *_WEBP_RIFF_WINDOW):
+    if data.startswith(b"RIFF") and _matches_window(data, *_WEBP_RIFF_WINDOW):
         return "image/webp"
-    if _matches_window(data, *_WAV_RIFF_WINDOW):
+    if data.startswith(b"RIFF") and _matches_window(data, *_WAV_RIFF_WINDOW):
         return "audio/wav"
     if data[:4] == b"fLaC":
         return "audio/flac"
@@ -248,7 +264,7 @@ def fast_validate_content_type(data: bytes, declared: str) -> None:
                 )
             return
         if normalized == "image/webp":
-            if not _matches_window(data, *_WEBP_RIFF_WINDOW):
+            if not data.startswith(b"RIFF") or not _matches_window(data, *_WEBP_RIFF_WINDOW):
                 raise ContentValidationError(
                     declared=normalized,
                     detected=detected,
@@ -298,7 +314,7 @@ def fast_validate_content_type(data: bytes, declared: str) -> None:
         )
     if normalized.startswith("audio/"):
         if normalized in {"audio/wav", "audio/x-wav"}:
-            if not _matches_window(data, *_WAV_RIFF_WINDOW):
+            if not data.startswith(b"RIFF") or not _matches_window(data, *_WAV_RIFF_WINDOW):
                 raise ContentValidationError(
                     declared=normalized,
                     detected=detected,
@@ -380,8 +396,9 @@ def fast_validate_content_type(data: bytes, declared: str) -> None:
                 reason="application/json body is not an object or array",
             )
         try:
-            data.decode("utf-8")
-        except UnicodeDecodeError as exc:
+            text = data.decode("utf-8")
+            json.loads(text, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise ContentValidationError(
                 declared=normalized,
                 detected=detected,
@@ -399,6 +416,13 @@ def fast_validate_content_type(data: bytes, declared: str) -> None:
                 sha256=sha,
                 reason="text/plain body is not valid UTF-8",
             ) from exc
+        if b"\x00" in data:
+            raise ContentValidationError(
+                declared=normalized,
+                detected=detected,
+                sha256=sha,
+                reason="text/plain body contains NUL bytes",
+            )
         if b"<script" in data.lower() or b"<?xml" in data.lower():
             raise ContentValidationError(
                 declared=normalized,

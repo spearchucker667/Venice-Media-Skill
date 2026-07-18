@@ -10,6 +10,7 @@ from venice_media_skill.errors import (
     ConsentRequired,
     DownloadLimitExceeded,
     NetworkSafetyError,
+    TransportError,
 )
 
 
@@ -106,7 +107,7 @@ def test_redirect_on_authenticated_request_is_rejected() -> None:
     assert "redirect" in exc_info.value.message.lower()
 
 
-def test_httpx_transport_error_is_normalized_to_api_error() -> None:
+def test_httpx_transport_error_is_normalized_to_transport_error() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ReadError("simulated read failure")
 
@@ -117,7 +118,7 @@ def test_httpx_transport_error_is_normalized_to_api_error() -> None:
             transport=httpx.MockTransport(handler),
             allow_noncanonical_endpoint=True,
         ) as client,
-        pytest.raises(ApiError) as exc_info,
+        pytest.raises(TransportError) as exc_info,
     ):
         client.request("POST", "/video/queue", json_body={})
     assert exc_info.value.cause == "ReadError"

@@ -75,12 +75,23 @@ chmod 0755 "$BIN_HOME/venice-media"
 copy_skill() {
   local destination="$1"
   mkdir -p "$(dirname "$destination")"
-  rm -rf "$destination"
-  cp -R "$ROOT/skills/venice-media" "$destination"
+  local staging
+  staging="$(mktemp -d "$(dirname "$destination")/.venice-media.XXXXXX")"
+  cp -R "$ROOT/skills/venice-media/." "$staging/"
+  test -f "$staging/SKILL.md"
+  local backup="${destination}.rollback"
+  rm -rf "$backup"
+  if [[ -e "$destination" ]]; then mv "$destination" "$backup"; fi
+  if mv "$staging" "$destination"; then
+    rm -rf "$backup"
+  else
+    if [[ -e "$backup" ]]; then mv "$backup" "$destination"; fi
+    exit 1
+  fi
 }
 
 if [[ "$SCOPE" == "user" ]]; then
-  copy_skill "$HOME/.agents/skills/venice-media"
+  if [[ "$HOST" == "generic" || "$HOST" == "all" ]]; then copy_skill "$HOME/.agents/skills/venice-media"; fi
   if [[ "$HOST" == "kimi" || "$HOST" == "all" ]]; then
     copy_skill "${KIMI_CODE_HOME:-$HOME/.kimi-code}/skills/venice-media"
   fi
@@ -89,7 +100,7 @@ else
     PROJECT_DIR="$PWD"
   fi
   PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
-  copy_skill "$PROJECT_DIR/.agents/skills/venice-media"
+  if [[ "$HOST" == "generic" || "$HOST" == "all" ]]; then copy_skill "$PROJECT_DIR/.agents/skills/venice-media"; fi
   if [[ "$HOST" == "kimi" || "$HOST" == "all" ]]; then
     copy_skill "$PROJECT_DIR/.kimi-code/skills/venice-media"
   fi

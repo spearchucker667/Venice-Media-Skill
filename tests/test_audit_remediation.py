@@ -46,9 +46,11 @@ from venice_media_skill.consent import (
     _acquire_lock,
     _release_lock,
 )
-from venice_media_skill.errors import ConfigurationError
+from venice_media_skill.errors import ConfigurationError, ContentValidationError, RequestValidationError, TransportError
 from venice_media_skill.output import (
     ArtifactWriter,
+    _atomic_write_bytes,
+    _atomic_write_text,
     _resolve_artifact_path,
     atomic_write_text,
 )
@@ -59,6 +61,7 @@ from venice_media_skill.payloads import (
     build_video_quote,
 )
 from venice_media_skill.request import MediaRequest, request_json_schema
+from venice_media_skill.util import fast_validate_content_type
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n"
@@ -128,6 +131,44 @@ def test_p11_shipped_examples_all_validate() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     assert (repo_root / "README.md").is_file()
     assert (repo_root / "skills" / "venice-media" / "SKILL.md").is_file()
+
+
+def test_every_example_validates_schema_and_reaches_cli_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from venice_media_skill.cli import main
+
+    fixtures = {
+        ".png": _PNG,
+        ".mp3": b"ID3" + b"\x00" * 64,
+        ".mp4": b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64,
+    }
+    monkeypatch.setenv("VENICE_MEDIA_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("VENICE_MEDIA_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("VENICE_MEDIA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("VENICE_MEDIA_OUTPUT_DIR", str(tmp_path / "output"))
+    schema = request_json_schema()
+    examples = Path(__file__).resolve().parents[1] / "examples" / "requests"
+    for source in sorted(examples.glob("*.json")):
+        payload = json.loads(source.read_text())
+        for key, value in list(payload.get("inputs", {}).items()):
+            values = value if isinstance(value, list) else [value]
+            replacements: list[str] = []
+            for index, item in enumerate(values):
+                if isinstance(item, str) and item.startswith("/absolute/path/"):
+                    suffix = Path(item).suffix
+                    fixture = tmp_path / f"{source.stem}-{key}-{index}{suffix}"
+                    fixture.write_bytes(fixtures[suffix])
+                    replacements.append(str(fixture))
+                else:
+                    replacements.append(item)
+            payload["inputs"][key] = replacements if isinstance(value, list) else replacements[0]
+        jsonschema.validate(payload, schema)
+        manifest = tmp_path / source.name
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+        assert main(["run", str(manifest)]) == 0
+        emitted = json.loads(capsys.readouterr().out)
+        assert emitted["status"] == "dry_run"
 
 
 def test_p11_readme_skills_manifests_present(tmp_path: Path) -> None:
@@ -322,6 +363,49 @@ def test_helpers_importable() -> None:
     assert callable(_acquire_lock)
     assert callable(_release_lock)
     assert callable(_resolve_artifact_path)
+
+
+def test_atomic_helpers_return_existing_target(tmp_path: Path) -> None:
+    binary = tmp_path / "value.bin"
+    text = tmp_path / "value.txt"
+    assert _atomic_write_bytes(binary, b"value") == binary.resolve()
+    assert _atomic_write_text(text, "value") == text.resolve()
+    assert binary.exists() and text.exists()
+
+
+def test_realistic_riff_headers_and_bounded_text_json_validation() -> None:
+    wav = b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + b"\x00" * 32
+    webp = b"RIFF" + (24).to_bytes(4, "little") + b"WEBPVP8 " + b"\x00" * 16
+    fast_validate_content_type(wav, "audio/wav")
+    fast_validate_content_type(webp, "image/webp")
+    fast_validate_content_type(b'{"ok": true}', "application/json")
+    with pytest.raises(ContentValidationError):
+        fast_validate_content_type(b'{"broken": }', "application/json")
+    with pytest.raises(ContentValidationError):
+        fast_validate_content_type(b"plain\x00text", "text/plain")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_execution_numbers_rejected(value: float) -> None:
+    with pytest.raises(RequestValidationError):
+        MediaRequest.from_mapping(
+            {
+                "operation": "image.generate",
+                "model": "m",
+                "prompt": "p",
+                "execution": {"timeout_seconds": value},
+            }
+        )
+
+
+def test_transport_error_exit_code_9(monkeypatch: pytest.MonkeyPatch) -> None:
+    from venice_media_skill import cli
+
+    def fail(_args: object) -> object:
+        raise TransportError("offline", "ConnectError")
+
+    monkeypatch.setattr(cli, "_dispatch", fail)
+    assert cli.main(["doctor"]) == 9
 
 
 # Sanity: ensure the VeniceClient constructor does not regress on a normal path.

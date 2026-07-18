@@ -164,14 +164,14 @@ def test_tts_music_and_transcription_plans() -> None:
         "audio.generate", model="music-1", prompt="ambient"
     )
     # P1-04: ``lyrics_prompt`` (canonical) replaces ``lyrics``;
-    # ``instrumental`` replaces ``force_instrumental``.
+    # Planner fields must use the exact manifest/provider spelling.
     assert {
         "parameters.duration_seconds",
-        "parameters.instrumental",
+        "parameters.force_instrumental",
         "parameters.lyrics_prompt",
     }.issubset(fields(music))
     assert "parameters.lyrics" not in fields(music)
-    assert "parameters.force_instrumental" not in fields(music)
+    assert "parameters.instrumental" not in fields(music)
 
     asr_catalog = FakeCatalog(model("asr-1", {}))
     asr = Planner(asr_catalog).plan(  # type: ignore[arg-type]

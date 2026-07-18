@@ -37,20 +37,31 @@ $Launcher = Join-Path $BinDir 'venice-media.cmd'
 "@ | Set-Content -Encoding Ascii $Launcher
 
 function Copy-Skill([string]$Destination) {
-    if (Test-Path $Destination) { Remove-Item -Recurse -Force $Destination }
     New-Item -ItemType Directory -Force -Path (Split-Path $Destination -Parent) | Out-Null
-    Copy-Item -Recurse -Force (Join-Path $Root 'skills\venice-media') $Destination
+    $Staging = Join-Path (Split-Path $Destination -Parent) ('.venice-media.' + [guid]::NewGuid().ToString('N'))
+    $Backup = "$Destination.rollback"
+    Copy-Item -Recurse -Force (Join-Path $Root 'skills\venice-media') $Staging
+    if (-not (Test-Path (Join-Path $Staging 'SKILL.md'))) { throw 'Bundled skill is missing SKILL.md' }
+    if (Test-Path $Backup) { Remove-Item -Recurse -Force $Backup }
+    if (Test-Path $Destination) { Move-Item $Destination $Backup }
+    try {
+        Move-Item $Staging $Destination
+        if (Test-Path $Backup) { Remove-Item -Recurse -Force $Backup }
+    } catch {
+        if ((-not (Test-Path $Destination)) -and (Test-Path $Backup)) { Move-Item $Backup $Destination }
+        throw
+    }
 }
 
 if ($Scope -eq 'user') {
-    Copy-Skill (Join-Path $HOME '.agents\skills\venice-media')
+    if ($HostName -in @('generic', 'all')) { Copy-Skill (Join-Path $HOME '.agents\skills\venice-media') }
     if ($HostName -in @('kimi', 'all')) {
         $KimiHome = if ($env:KIMI_CODE_HOME) { $env:KIMI_CODE_HOME } else { Join-Path $HOME '.kimi-code' }
         Copy-Skill (Join-Path $KimiHome 'skills\venice-media')
     }
 } else {
     $ResolvedProject = (Resolve-Path $ProjectDir).Path
-    Copy-Skill (Join-Path $ResolvedProject '.agents\skills\venice-media')
+    if ($HostName -in @('generic', 'all')) { Copy-Skill (Join-Path $ResolvedProject '.agents\skills\venice-media') }
     if ($HostName -in @('kimi', 'all')) {
         Copy-Skill (Join-Path $ResolvedProject '.kimi-code\skills\venice-media')
     }

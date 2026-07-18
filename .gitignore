@@ -38,4 +38,5 @@ venice-media-output/
 Thumbs.db
 .idea/
 .vscode/
-/docs/audits
+/docs/audits/*
+!/docs/audits/Venice_Media_Skill_Remediation_2026-07-18.md

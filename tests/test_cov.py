@@ -272,7 +272,7 @@ def test_cli_approve_quote_records(
         [
             "approve-quote",
             "video.generate",
-            "hash-abc",
+            "a" * 64,
             "--max-cost",
             "10.0",
             "--quote",
@@ -282,7 +282,7 @@ def test_cli_approve_quote_records(
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "recorded"
-    assert out["payload_hash"] == "hash-abc"
+    assert out["payload_hash"] == "a" * 64
 
 
 def test_cli_jobs_list_and_get(
@@ -1403,32 +1403,33 @@ def test_ensure_seedance_fact_branches() -> None:
 
 def test_quote_approval_store_record_and_consume_branches(tmp_path: Path) -> None:
     store = QuoteApprovalStore(tmp_path / "qu.json")
+    payload_hash = "b" * 64
     approval = store.record(
         operation="video.generate",
-        payload_hash="hash-1",
+        payload_hash=payload_hash,
         quote_response={"quote": 9.0},
         max_cost=10.0,
     )
-    resolved = store.resolve("hash-1")
+    resolved = store.resolve(payload_hash)
     assert resolved is not None
     assert resolved.operation == "video.generate"
     with pytest.raises(QuoteApprovalMismatch):
         store.consume(approval_id=approval.approval_id, current_payload_hash="different", max_observed_cost=9.0)
     with pytest.raises(ConsentApprovalMissing):
-        store.consume(approval_id="missing", current_payload_hash="hash-1", max_observed_cost=9.0)
+        store.consume(approval_id="missing", current_payload_hash=payload_hash, max_observed_cost=9.0)
     # Over max cost returns ConsentApprovalMissing('quote exceeded ...'), not QuoteApprovalMismatch.
     with pytest.raises(ConsentApprovalMissing):
-        store.consume(approval_id=approval.approval_id, current_payload_hash="hash-1", max_observed_cost=99.0)
+        store.consume(approval_id=approval.approval_id, current_payload_hash=payload_hash, max_observed_cost=99.0)
     # successful consume removes the entry.
-    store.consume(approval_id=approval.approval_id, current_payload_hash="hash-1", max_observed_cost=8.0)
-    assert store.resolve("hash-1") is None
+    store.consume(approval_id=approval.approval_id, current_payload_hash=payload_hash, max_observed_cost=8.0)
+    assert store.resolve(payload_hash) is None
 
 
 def test_quote_approval_id_is_well_formed(tmp_path: Path) -> None:
     store = QuoteApprovalStore(tmp_path / "q.json")
     approval = store.record(
         operation="audio.generate",
-        payload_hash="hash-2",
+        payload_hash="c" * 64,
         quote_response={"quote": 1.0},
         max_cost=1.0,
     )

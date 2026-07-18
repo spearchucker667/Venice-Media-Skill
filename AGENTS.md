@@ -14,10 +14,9 @@ Before any commit, run:
 ./scripts/validate.sh
 ```
 
-This is the single source of truth for CI quality and runs, in order:
-`python -m compileall -q src` → `ruff check .` → `ruff format --check .` → `mypy src` → `pytest --cov=venice_media_skill` → `python -m build` → `validate-openapi references/venice-openapi.yaml` → JSON sanity check on `adapters/kimi-code/kimi.plugin.json` and `references/request.schema.json`.
+`scripts/validate.sh` is the single source of truth for CI quality. The script also runs a `request.schema.json` drift check (regenerate into a tmp file and compare bytes against `references/request.schema.json`) plus `scripts/inspect-sdist.py` and `scripts/verify-bundled-assets.py`. Read the script before changing it.
 
-CI also runs this on Python 3.11 / 3.12 / 3.13 and a cross-platform smoke (`macos-latest`, `windows-latest`) that exercises `doctor`, `schema`, and `validate-openapi`. Additional CI jobs: `wheel-smoke` (fresh venv + wheel install + smoke), `minimum-deps` (pins `httpx==0.28.1`, `platformdirs==4.3.6`, `PyYAML==6.0.2`), `quality` now runs `inspect-sdist.py` + `verify-bundled-assets.py` after build.
+CI also runs this on Python 3.11 / 3.12 / 3.13 and a cross-platform smoke (`macos-latest`, `windows-latest`) that exercises `doctor`, `schema`, and `validate-openapi`. Additional CI jobs: `wheel-smoke` (fresh venv + wheel install + smoke), `minimum-deps` (pins `httpx==0.28.1`, `platformdirs==4.3.6`, `PyYAML==6.0.2`).
 
 ## Targeted commands
 
@@ -26,25 +25,22 @@ CI also runs this on Python 3.11 / 3.12 / 3.13 and a cross-platform smoke (`maco
 | Full validation | `./scripts/validate.sh` |
 | Lint / format | `python -m ruff check .` / `python -m ruff format --check .` |
 | Types (strict, `src/` only) | `python -m mypy src` |
-| Tests | `python -m pytest` |
-| Coverage report | `python -m pytest --cov=venice_media_skill --cov-report=term-missing` |
+| Tests (coverage gate 80 %) | `python -m pytest --cov=venice_media_skill --cov-report=term-missing` |
 | Single test | `python -m pytest tests/test_security.py::TestReservedParameterRejection -q` |
 | OpenAPI snapshot check | `python -m venice_media_skill validate-openapi references/venice-openapi.yaml` |
 | Rebuild & reinstall locally | `python -m pip install -e '.[dev]'` |
 | Build wheel + sdist | `python -m build` |
-
-Coverage gate is 80% (`tool.coverage.report.fail_under` in `pyproject.toml`).
 
 ## Repo layout
 
 ```
 src/venice_media_skill/   Python bridge package (mypy strict target)
   cli.py                  argparse entry; JSON stdout, errors stderr, exit codes 0/2-9
-  client.py               Bearer-authenticated HTTPS + fail-closed public downloader; public API: `download_public_url` (legacy 500 MiB), `download_public_bytes` (64 MiB default), `download_public_file` (2 GiB default, atomic rename); sink classes `_MemorySink`/`_FileSink` with `try/except BaseException: sink.discard(); raise` for atomicity
+  client.py               Bearer-authenticated HTTPS + fail-closed public downloader; public API: `download_public_url` (legacy 500 MiB), `download_public_bytes` (64 MiB default), `download_public_file` (2 GiB default, atomic rename)
   catalog.py              Live GET /models with 1h on-disk cache
   config.py               platformdirs paths; Settings.load(require_api_key=…)
   consent.py              ConsentStore + QuoteApprovalStore (hash-bound, single-use)
-  errors.py               Typed error hierarchy; `PublicHttpError(NetworkSafetyError)` for 4xx/5xx with status_code, content_type, request_id, body_preview (≤512 bytes)
+  errors.py               Typed error hierarchy; `PublicHttpError(NetworkSafetyError)` for 4xx/5xx HTTPS outcomes
   installer.py            install the Skill bundle to host-agent directories
   jobs.py                 Durable local queue records (resume, never auto-resubmit)
   output.py               Atomic writes, binary decoding, metadata sidecars
@@ -57,8 +53,8 @@ src/venice_media_skill/   Python bridge package (mypy strict target)
   assets/skill/           Vendored Skill bundle shipped via wheel
 adapters/                 Per-host plugin entries (kimi-code, generic)
 skills/venice-media/      Source-of-truth Skill (mirrors into assets/skill)
-references/               Bundled API references (do NOT regenerate silently)
-  venice-openapi.yaml     Reviewed OpenAPI snapshot — preserve provenance
+references/               Bundled API references (reviewed snapshot, not regenerated)
+  venice-openapi.yaml     Reviewed OpenAPI snapshot — see invariants below
   venice-api-llms.md      LLM-readable Venice API snapshot
   request.schema.json     Generated from request.request_json_schema()
   seedance-2-0-api-guide.md

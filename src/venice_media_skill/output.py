@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from contextlib import suppress
@@ -143,7 +145,7 @@ def _atomic_write_bytes(target: Path, data: bytes, *, allow_overwrite: bool = Fa
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, str(target))
-        return Path(temp_path)
+        return target.resolve()
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(temp_path)
@@ -175,7 +177,7 @@ def _atomic_write_text(target: Path, data: str, *, allow_overwrite: bool = False
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, str(target))
-        return Path(temp_path)
+        return target.resolve()
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(temp_path)
@@ -203,10 +205,26 @@ def _commit_file_blob(blob: _Blob, final_path: Path, *, overwrite: bool) -> None
     source_resolved = blob.file_path.resolve()
     try:
         os.replace(source_resolved, final_path)
-    except OSError:
-        # Final destination missing/not writable - propagate. Source
-        # remains intact at blob.file_path so the caller can retry.
-        raise
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        fd, temp_path = tempfile.mkstemp(dir=final_path.parent, prefix=f".{final_path.name}.", suffix=".tmp")
+        try:
+            with source_resolved.open("rb") as source, os.fdopen(fd, "wb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+                target.flush()
+                os.fsync(target.fileno())
+            copied = Path(temp_path)
+            if copied.stat().st_size != blob.observed:
+                raise OutputError("cross-device artifact copy size mismatch")
+            if blob.sha256 is not None and _sha256_of_file(copied) != blob.sha256:
+                raise OutputError("cross-device artifact copy SHA-256 mismatch")
+            os.replace(copied, final_path)
+            source_resolved.unlink()
+        except Exception:
+            with suppress(FileNotFoundError):
+                Path(temp_path).unlink()
+            raise
 
 
 def _validate_blob_magic(blob: _Blob) -> None:

@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from .client import VeniceClient
+from .consent import _acquire_lock, _release_lock
 from .errors import OutputError
+from .output import atomic_write_text
 
 _MODEL_TYPES = {
     "all",
@@ -80,6 +82,17 @@ class ModelCatalog:
 
     def _write_cache(self, payload: dict[str, Any]) -> None:
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.cache_file.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temporary.replace(self.cache_file)
+        _acquire_lock(self.cache_file)
+        try:
+            current = self._read_cache() or {"fetched_at": payload.get("fetched_at"), "by_type": {}}
+            current_by_type = current.get("by_type")
+            payload_by_type = payload.get("by_type")
+            if not isinstance(current_by_type, dict):
+                current_by_type = {}
+            if isinstance(payload_by_type, dict):
+                current_by_type.update(payload_by_type)
+            current["by_type"] = current_by_type
+            current["fetched_at"] = payload.get("fetched_at", time.time())
+            atomic_write_text(self.cache_file, json.dumps(current, indent=2, sort_keys=True) + "\n")
+        finally:
+            _release_lock(self.cache_file)

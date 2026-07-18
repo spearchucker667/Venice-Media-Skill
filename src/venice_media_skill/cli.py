@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import importlib.resources as importlib_resources
 import json
 import os
@@ -15,6 +16,8 @@ from typing import Any, cast
 
 import httpx
 import yaml
+from openapi_spec_validator import validate
+from openapi_spec_validator.validation.exceptions import OpenAPIValidationError, ValidatorDetectError
 
 from . import __version__
 from .catalog import ModelCatalog
@@ -33,6 +36,7 @@ from .errors import (
     QuoteApprovalRequired,
     RequestValidationError,
     ReservedParameterError,
+    TransportError,
     VeniceMediaError,
 )
 from .installer import SUPPORTED_HOSTS, SUPPORTED_SCOPES, install_skill
@@ -51,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--compact", action="store_true", help="Emit compact JSON instead of indented JSON.")
+    parser.add_argument(
+        "--allow-noncanonical-endpoint",
+        action="store_true",
+        help="Development only: allow VENICE_BASE_URL to target a noncanonical HTTPS host.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser(
@@ -212,6 +221,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=sys.stderr,
         )
         return 8
+    except TransportError as exc:
+        _emit(
+            {
+                "status": "error",
+                "error_type": "transport_error",
+                "transport": exc.cause,
+                "message": exc.message,
+            },
+            compact=args.compact,
+            stream=sys.stderr,
+        )
+        return 9
     except ApiError as exc:
         _emit(
             {
@@ -296,7 +317,11 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
             return jobs.list()
         return jobs.get(args.queue_id)
     if args.command == "doctor":
-        return _doctor(settings, online=bool(args.online))
+        return _doctor(
+            settings,
+            online=bool(args.online),
+            allow_noncanonical_endpoint=bool(args.allow_noncanonical_endpoint),
+        )
     if args.command == "plan" and args.operation in MODELLESS_OPERATIONS:
         return Planner(None).plan(
             args.operation,
@@ -313,6 +338,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
             base_url=settings.base_url,
             api_key=api_key,
             timeout_seconds=settings.timeout_seconds,
+            allow_noncanonical_endpoint=args.allow_noncanonical_endpoint,
         ) as client:
             runner = MediaRunner(
                 client=client,
@@ -337,6 +363,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
         base_url=settings.base_url,
         api_key=settings.api_key,
         timeout_seconds=settings.timeout_seconds,
+        allow_noncanonical_endpoint=args.allow_noncanonical_endpoint,
     ) as client:
         catalog = ModelCatalog(client, settings.model_cache_file)
         if args.command == "models":
@@ -381,8 +408,11 @@ def _approve_quote(store: QuoteApprovalStore, args: argparse.Namespace) -> dict[
     if not quote_path.is_file():
         raise RequestValidationError(f"Quote file does not exist: {quote_path}")
     try:
-        quote_payload = json.loads(quote_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        quote_payload = json.loads(
+            quote_path.read_text(encoding="utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise RequestValidationError(f"Quote file {quote_path} is not valid JSON: {exc}") from exc
     if not isinstance(quote_payload, dict):
         raise RequestValidationError("Quote file must contain a JSON object.")
@@ -403,7 +433,7 @@ def _approve_quote(store: QuoteApprovalStore, args: argparse.Namespace) -> dict[
     }
 
 
-def _doctor(settings: Settings, *, online: bool) -> dict[str, Any]:
+def _doctor(settings: Settings, *, online: bool, allow_noncanonical_endpoint: bool = False) -> dict[str, Any]:
     checks: dict[str, Any] = {
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -425,6 +455,7 @@ def _doctor(settings: Settings, *, online: bool) -> dict[str, Any]:
                 base_url=settings.base_url,
                 api_key=settings.api_key,
                 timeout_seconds=settings.timeout_seconds,
+                allow_noncanonical_endpoint=allow_noncanonical_endpoint,
             ) as client:
                 payload = client.get_json("/models", params={"type": "image"})
                 count = len(payload.get("data", [])) if isinstance(payload, dict) else 0
@@ -464,6 +495,11 @@ def _validate_openapi(path: Path) -> dict[str, Any]:
         "/video/quote",
     }
     missing = sorted(required.difference(paths))
+    if not missing:
+        try:
+            validate(payload)
+        except (OpenAPIValidationError, ValidatorDetectError) as exc:
+            raise ConfigurationError(f"OpenAPI specification validation failed: {exc}") from exc
     info_value = payload.get("info")
     info = cast(dict[str, Any], info_value) if isinstance(info_value, dict) else {}
     return {
@@ -524,6 +560,7 @@ def _resolve_bundled_openapi(explicit: str | None) -> Path:
     target_fd, target_path = tempfile.mkstemp(prefix="venice-openapi-", suffix=".yaml")
     os.close(target_fd)
     Path(target_path).write_bytes(asset.read_bytes())
+    atexit.register(lambda: Path(target_path).unlink(missing_ok=True))
     return Path(target_path)
 
 

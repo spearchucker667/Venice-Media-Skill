@@ -4,8 +4,8 @@
   "model": "REPLACE_WITH_LIVE_IMAGE_MODEL_ID",
   "prompt": "A cinematic sunset over a glass-calm ocean, warm volumetric light, distant clouds, natural color grading",
   "parameters": {
-    "width": 1024,
-    "height": 1024,
+    "aspect_ratio": "1:1",
+    "resolution": "1K",
     "negative_prompt": "text, watermark, logo, compression artifacts",
     "variants": 1,
     "format": "webp"

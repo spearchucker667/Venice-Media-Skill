@@ -2,6 +2,8 @@ x-venice-forge-provenance:
   source: https://api.venice.ai/doc/api/swagger.yaml
   retrieved: "2026-07-11"
   content_version: "20260709.204640"
+  local_corrections:
+    - "Quoted YAML 1.1 boolean-like enum values off/on for OpenAPI type validity; provider semantics unchanged."
 externalDocs:
   description: Venice.ai API documentation
   url: https://docs.venice.ai
@@ -1486,15 +1488,15 @@ components:
               type: string
               enum:
                 - auto
-                - off
-                - on
-              default: off
+                - "off"
+                - "on"
+              default: "off"
               description: Enable web search for this request. Defaults to off. On will force
                 web search on the request. Auto will enable it based on the
                 model's discretion. Citations will be returned either in the
                 first chunk of a streaming result, or in the non streaming
                 response.
-              example: off
+              example: "off"
             enable_web_scraping:
               type: boolean
               default: false
