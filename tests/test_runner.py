@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from venice_media_skill.client import ApiResponse
 from venice_media_skill.consent import ConsentStore, QuoteApprovalStore
 from venice_media_skill.errors import (
     ConsentApprovalMissing,
+    DurableQueueWriteFailed,
     OutputError,
     PayloadValidationError,
     QuoteApprovalMismatch,
@@ -820,3 +822,306 @@ def _PNG_data_url_safe(tmp_path: Path) -> str:
     png_path = tmp_path / "image.png"
     png_path.write_bytes(_PNG)
     return str(png_path)
+
+
+# ----- P1-01 queue durability -----------------------------------------------
+
+
+def test_provider_acceptance_is_recoverable_when_jobstore_create_fails(
+    tmp_path: Path,
+) -> None:
+    """If the local durable record write fails AFTER Venice has already
+    accepted a paid queue submission, the runner must surface the
+    ``queue_id`` to the operator and release the approval claims (NOT
+    finalize/consume them). The runner must NOT auto-resubmit.
+    """
+    client = FakeClient(
+        [
+            ApiResponse(200, "application/json", {}, json_data={"quote": 0.42}),
+            ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-recover"}),
+        ]
+    )
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset video",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True, "wait": False},
+        }
+    )
+    from venice_media_skill.payloads import build_video_queue
+
+    canonical = build_video_queue(request_obj)
+    quote_store.record(
+        operation=request_obj.operation,
+        payload_hash=canonical.hash,
+        quote_response={"quote": 0.42},
+        max_cost=1.0,
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+
+    # ``JobStore`` is a slots dataclass so we cannot rebind
+    # ``runner.jobs.create`` directly. Wrap ``runner.jobs`` in a tiny
+    # proxy whose ``create`` raises ``OutputError``. We forward
+    # everything else to the real store; the runner only needs ``create``
+    # before crashing.
+    original_jobs = runner.jobs
+
+    class _ExplodingJobs:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(original_jobs, name)
+
+        def create(self, **_kwargs: Any) -> dict[str, Any]:
+            raise OutputError("simulated write failure")
+
+    runner.jobs = _ExplodingJobs()  # type: ignore[assignment]
+
+    with pytest.raises(DurableQueueWriteFailed) as exc_info:
+        runner.run(request_obj)
+    exc = exc_info.value
+    assert exc.queue_id == "queue-recover"
+    assert exc.operation == "video.generate"
+    assert exc.media_type == "video"
+    assert exc.model == "video-model"
+    assert "simulated write failure" in exc.cause
+
+    # The runner must NOT auto-resubmit. Exactly one /video/queue call
+    # was made and no /video/quote resubmission is queued.
+    paths = [call["path"] for call in client.calls]
+    assert paths[0].endswith("/video/quote")
+    assert paths.count("/video/quote") == 1
+    assert paths.count("/video/queue") == 1
+
+    # The approval claim must be released, not finalized; the
+    # stored record must still be available so a future approve-quote
+    # with the SAME payload_hash surfaces a hash mismatch error rather
+    # than silently consuming the approval.
+    approval_id = _approval_id_for(quote_store, canonical.hash)
+    assert approval_id is not None, "recorded approval not found"
+    state = quote_store._read()
+    # Released: approval_id is back at the top level, not under _claimed.
+    assert state.get(approval_id) is not None
+    assert state.get("_claimed", {}).get(approval_id) is None
+
+
+def test_claims_not_consumed_before_durable_queue_record(
+    tmp_path: Path,
+) -> None:
+    """The durable ``jobs.create`` call must precede the approval
+    finalisation. A wrapping proxy records call order and proves the
+    three-phase commit ordering.
+    """
+    client = FakeClient(
+        [
+            ApiResponse(200, "application/json", {}, json_data={"quote": 0.13}),
+            ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-2"}),
+        ]
+    )
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True, "wait": False},
+        }
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+    from venice_media_skill.payloads import build_video_queue
+
+    canonical = build_video_queue(request_obj)
+    quote_store.record(
+        operation=request_obj.operation,
+        payload_hash=canonical.hash,
+        quote_response={"quote": 0.13},
+        max_cost=1.0,
+    )
+
+    events: list[str] = []
+    original_jobs = runner.jobs
+
+    class _SpyJobs:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(original_jobs, name)
+
+        def create(self, **kwargs: Any) -> dict[str, Any]:
+            events.append(f"jobs.create:{kwargs.get('queue_id')}/{kwargs.get('status')}")
+            return original_jobs.create(**kwargs)
+
+    real_finalize = runner._finalize_claims
+
+    class _SpyFinalizeProxy:
+        def __init__(self) -> None:
+            self._real = real_finalize
+
+        def __call__(self, claims: Any) -> None:
+            events.append("finalize_claims")
+            self._real(claims)
+
+    runner.jobs = _SpyJobs()  # type: ignore[assignment]
+    runner._finalize_claims = _SpyFinalizeProxy()  # type: ignore[assignment]
+
+    result = runner.run(request_obj)
+    assert result["status"] == "queued"
+    assert events[0].startswith("jobs.create:queue-2/pending_finalize"), events
+    assert "finalize_claims" in events
+    assert events.index(events[0]) < events.index("finalize_claims")
+    # And the record was promoted to queued after finalisation.
+    assert JobStore(tmp_path / "jobs").get("queue-2")["status"] == "queued"
+
+
+def test_pending_finalize_status_is_an_allowed_durable_status(tmp_path: Path) -> None:
+    """``jobs.create(... status=\"pending_finalize\")`` must succeed — the
+    three-phase commit hook in the runner depends on it. An unknown
+    status must still raise ``OutputError``.
+    """
+    from venice_media_skill.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    record = store.create(
+        media_type="video",
+        model="video-model",
+        queue_id="queue-status-test",
+        request={"operation": "video.generate", "model": "video-model"},
+        input_summary=[],
+        status="pending_finalize",
+    )
+    assert record["status"] == "pending_finalize"
+    # Unknown status still surfaces OutputError.
+    with pytest.raises(OutputError, match="status"):
+        store.create(
+            media_type="video",
+            model="video-model",
+            queue_id="queue-status-bad",
+            request={},
+            input_summary=[],
+            status="not-a-real-status",
+        )
+
+
+def test_durable_queue_write_failed_serializes_to_json_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI must emit a structured payload to stderr with the
+    ``queue_id`` so the host agent can drive the recovery step instead
+    of silently resubmitting.
+
+    We replace ``PhaseRunner`` with a stub that returns a pre-configured
+    runner whose ``jobs.create`` raises ``OutputError``. The CLI's top
+    level ``except DurableQueueWriteFailed`` then writes a structured
+    payload to stderr and returns exit code 5.
+    """
+    import json
+
+    from venice_media_skill.cli import main
+
+    # The CLI requires VENICE_API_KEY before constructing the runner; a
+    # sentinel value is fine because the test mocks the runner entirely.
+    monkeypatch.setenv("VENICE_API_KEY", "test-key")
+
+    client = FakeClient(
+        [
+            ApiResponse(200, "application/json", {}, json_data={"quote": 0.5}),
+            ApiResponse(200, "application/json", {}, json_data={"queue_id": "queue-cli"}),
+        ]
+    )
+    quote_store = QuoteApprovalStore(tmp_path / "quote_approvals.json")
+    request_obj = request(
+        {
+            "operation": "video.generate",
+            "model": "video-model",
+            "prompt": "sunset",
+            "parameters": {"duration": "5s"},
+            "execution": {"quote_first": True, "confirmed_cost": True, "wait": False},
+        }
+    )
+    from venice_media_skill.payloads import build_video_queue
+
+    canonical = build_video_queue(request_obj)
+    quote_store.record(
+        operation=request_obj.operation,
+        payload_hash=canonical.hash,
+        quote_response={"quote": 0.5},
+        max_cost=1.0,
+    )
+    runner = make_runner(tmp_path, client, quote_store=quote_store)
+
+    # ``JobStore`` is a slots dataclass so we cannot rebind its methods
+    # in place. Wrap ``runner.jobs`` in a tiny proxy whose ``create``
+    # raises ``OutputError``.
+    original_jobs_for_cli = runner.jobs
+
+    class _ExplodingJobsCli:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(original_jobs_for_cli, name)
+
+        def create(self, **_kwargs: Any) -> dict[str, Any]:
+            raise OutputError("simulated disk full")
+
+    runner.jobs = _ExplodingJobsCli()  # type: ignore[assignment]
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(request_obj.to_dict()))
+    stderr_path = tmp_path / "stderr.txt"
+
+    def _runner_factory(**_kwargs: Any) -> MediaRunner:
+        return runner
+
+    with (
+        unittest.mock.patch(
+            "venice_media_skill.cli.MediaRunner",
+            side_effect=_runner_factory,
+        ),
+        unittest.mock.patch("venice_media_skill.cli.VeniceClient", new=MagicMockVeniceClient),
+        unittest.mock.patch("sys.stderr", open(stderr_path, "w", encoding="utf-8")),
+    ):
+        exit_code = main(["--compact", "run", str(manifest_path)])
+    assert exit_code == 5, "operator-action rescue state shares exit code 5"
+    payload = _last_json_line(stderr_path.read_text(encoding="utf-8"))
+    assert payload["error_type"] == "durable_queue_write_failed"
+    assert payload["queue_id"] == "queue-cli"
+    assert payload["operation"] == "video.generate"
+    assert payload["media_type"] == "video"
+    assert "simulated disk full" in payload["cause"]
+    assert "queue_id" in payload["next_step"]
+
+
+class MagicMockVeniceClient:
+    """No-op VeniceClient stand-in. The patched MediaRunner ignores the
+    client entirely so this class is never actually exercised; it just
+    needs the context-manager protocol so ``with VeniceClient(...) as
+    client`` succeeds.
+    """
+
+    def __init__(self, **_kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> MagicMockVeniceClient:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+def _last_json_line(blob: str) -> dict[str, Any]:
+    import json
+
+    lines = [line for line in blob.splitlines() if line.lstrip().startswith("{")]
+    if not lines:
+        raise AssertionError(f"no JSON line found in: {blob!r}")
+    return json.loads(lines[-1])
+
+
+def _approval_id_for(quote_store: QuoteApprovalStore, payload_hash: str) -> str | None:
+    """Return the recorded ``approval_id`` whose ``payload_hash`` matches."""
+    data = quote_store._read()
+    for approval_id, entry in data.items():
+        if approval_id == "_claimed":
+            continue
+        if isinstance(entry, dict) and entry.get("payload_hash") == payload_hash:
+            return approval_id
+    return None

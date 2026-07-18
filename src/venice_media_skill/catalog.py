@@ -109,15 +109,16 @@ class ModelCatalog:
                 current_by_type = {}
             if isinstance(payload_fpt, dict):
                 current_fpt.update(payload_fpt)
+            # Every write here represents a *fresh* fetch, so unconditionally
+            # overwrite the entries we just produced. The age gate that
+            # decides whether to refetch lives in ``list()`` (read side),
+            # not here. Keeping the previous ``if fpt fresh, skip`` clause
+            # made the cache threshold about whether the previous copy was
+            # captured — so a second fetch within TTL silently discarded
+            # the new ``data`` while still bumping ``fetched_per_type``,
+            # making the cache stale forever.
             if isinstance(payload_by_type, dict):
                 for key, value in payload_by_type.items():
-                    fpt = current_fpt.get(key, 0)
-                    if (
-                        isinstance(fpt, (int, float))
-                        and time.time() - float(fpt) <= self.cache_ttl_seconds
-                        and key in current_by_type
-                    ):
-                        continue
                     current_by_type[key] = value
             current["by_type"] = current_by_type
             current["fetched_per_type"] = current_fpt
