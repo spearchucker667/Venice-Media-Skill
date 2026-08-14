@@ -116,6 +116,13 @@ warn_unreachable = true
 show_error_codes = true
 packages = ["venice_media_skill"]
 
+[[tool.mypy.overrides]]
+module = "venice_media_skill.keychain"
+# The module is macOS-only; on Linux hosts mypy sees the Darwin guard as
+# always returning, so suppress the resulting unreachable-code noise without
+# weakening strictness for the rest of the package.
+warn_unreachable = false
+
 [tool.coverage.run]
 branch = true
 source = ["venice_media_skill"]
