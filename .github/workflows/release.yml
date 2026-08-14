@@ -91,11 +91,22 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         run: python scripts/extract-changelog-notes.py "${GITHUB_REF_NAME}" --output release-notes.md
 
+      - name: Append GitHub-generated contributor/PR notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" \
+            -f target_commitish=main \
+            --jq .body > generated-notes.md
+          cat release-notes.md > release-body.md
+          printf '\n' >> release-body.md
+          cat generated-notes.md >> release-body.md
+
       - name: Create GitHub release
         # softprops/action-gh-release@v2.2.2 — pinned to immutable SHA.
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
         with:
           files: |
             dist/*
-          body_path: release-notes.md
-          generate_release_notes: true
+          body_path: release-body.md
