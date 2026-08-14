@@ -6,6 +6,7 @@ on:
       - "v*"
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -104,9 +105,14 @@ jobs:
           cat generated-notes.md >> release-body.md
 
       - name: Create GitHub release
-        # softprops/action-gh-release@v2.2.2 — pinned to immutable SHA.
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
+        # softprops/action-gh-release@v3.0.2 (Node 24) — pinned to immutable SHA.
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           files: |
             dist/*
           body_path: release-body.md
+
+      - name: Dispatch published-release artifact smoke
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release-artifact-smoke.yml --ref main -f tag="${GITHUB_REF_NAME}"

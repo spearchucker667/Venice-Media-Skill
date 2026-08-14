@@ -121,6 +121,11 @@ jobs:
           VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media/state
           VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media/output
 
+      - name: Exercise native PowerShell installer safety contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install.ps1 -Python python
+
   wheel-smoke:
     name: Wheel install smoke / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

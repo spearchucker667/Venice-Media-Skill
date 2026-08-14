@@ -6,6 +6,24 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 Changes that have been committed but not yet released.
 
+## [1.3.2] - 2026-08-14
+
+### Added
+
+- Added a cross-platform published-release artifact workflow that downloads GitHub Release assets, verifies their checksums, installs the released wheel and sdist in fresh environments, checks bundled resources, and exercises project skill installation.
+- Added a platform-neutral `scripts/verify-release-assets.py` checksum verifier and Windows-runner coverage for the native PowerShell installer.
+- Added an evidence-backed host compatibility matrix and external acceptance report for the published v1.3.1 artifacts.
+
+### Fixed
+
+- Hardened `scripts/install.ps1` with destination type and reparse-point checks, unique recovery backups, metadata sidecars, orphan-backup refusal, transactional staging, and rollback-safe failure handling.
+- Hardened `scripts/uninstall.ps1` to refuse reparse-point traversal and unexpected target types before deletion.
+- Made state-file locks follow the configured state directory by default, so sandboxed hosts using `VENICE_MEDIA_STATE_DIR` no longer time out while attempting to write locks in a platform-global directory.
+
+### Changed
+
+- Updated the immutable `softprops/action-gh-release` pin to v3.0.2, whose action runtime is Node 24.
+
 ## [1.3.1] - 2026-08-14
 
 ### Security
@@ -93,7 +111,8 @@ Changes that have been committed but not yet released.
 - Durable queue records for timeout-safe retrieval.
 - Seedance 2.0 consent flow.
 
-[Unreleased]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/spearchucker667/Venice-Media-Skill/releases/tag/v1.2.0

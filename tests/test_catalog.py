@@ -59,6 +59,16 @@ def test_catalog_preserves_exact_mocked_image_model_id(tmp_path: Path) -> None:
     assert catalog.get("lustify", "image") is None
 
 
+def test_catalog_preserves_unknown_model_metadata_fields(tmp_path: Path) -> None:
+    class MetadataClient:
+        def get_json(self, _path: str, *, params: dict[str, Any] | None = None) -> Any:
+            return {"data": [{"id": "priced-model", "model_spec": {"discount_to_user": 0.25}}]}
+
+    catalog = ModelCatalog(MetadataClient(), tmp_path / "models.json")  # type: ignore[arg-type]
+
+    assert catalog.list("image")[0]["model_spec"]["discount_to_user"] == 0.25
+
+
 def test_catalog_cache_freshness_and_explicit_refresh(tmp_path: Path, monkeypatch: object) -> None:
     now = 1000.0
     monkeypatch.setattr("venice_media_skill.catalog.time.time", lambda: now)  # type: ignore[attr-defined]

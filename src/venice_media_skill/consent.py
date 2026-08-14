@@ -29,8 +29,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
-from platformdirs import user_state_path
-
 from .errors import (
     ConsentApprovalMissing,
     ConsentChallenge,
@@ -39,7 +37,7 @@ from .errors import (
 )
 from .util import utc_now_iso
 
-_LOCK_DIR = os.environ.get("VENICE_MEDIA_LOCK_DIR") or str(user_state_path("venice-media-skill") / "locks")
+_LOCK_DIR: str | None = os.environ.get("VENICE_MEDIA_LOCK_DIR")
 
 # How long a lock can sit untouched before we attempt stale-recovery.
 _LOCK_STALE_AFTER_SECONDS: Final[float] = 30 * 60
@@ -82,7 +80,10 @@ def _get_lock_path(path: Path) -> Path:
     """
     resolved = str(path.expanduser().resolve())
     digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
-    return Path(_LOCK_DIR) / f"{path.name}.{digest}.lock"
+    # Preserve the normal state/locks layout while honoring an overridden
+    # state directory in sandboxed hosts. An explicit lock override wins.
+    lock_dir = Path(_LOCK_DIR) if _LOCK_DIR else path.expanduser().resolve().parent / "locks"
+    return lock_dir / f"{path.name}.{digest}.lock"
 
 
 def _acquire_lock(path: Path, exclusive: bool = True, timeout: float = 10.0) -> None:

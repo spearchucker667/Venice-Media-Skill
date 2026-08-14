@@ -15,6 +15,8 @@
 - [Security & privacy](security-and-privacy.md) — invariants and best practices
 - [Threat model](threat-model.md) — comprehensive security analysis
 - [Audits](audits/) — historical audit remediation records
+- [Compatibility matrix](compatibility-matrix.md) — evidence-backed host and platform acceptance status
+- [v1.3.1 external acceptance](audits/v1.3.1-external-acceptance.md) — published-artifact and distribution evidence
 
 ## Reference
 

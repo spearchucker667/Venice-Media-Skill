@@ -1,0 +1,141 @@
+name: Published release artifact smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify; blank selects the latest published release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifact-smoke-${{ inputs.tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  published-artifact-smoke:
+    name: Published artifacts / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout verification tooling
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Resolve immutable release tag
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $Tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } else {
+            gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name
+          }
+          if (-not $Tag -or $Tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw "Could not resolve a valid release tag: '$Tag'"
+          }
+          "tag=$Tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Resolved release tag: $Tag"
+
+      - name: Download published GitHub Release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          gh release download "${{ steps.release.outputs.tag }}" --repo "${{ github.repository }}" --dir release-assets
+          $Expected = @(
+            'SHA256SUMS.txt',
+            "venice-media-skill-$('${{ steps.release.outputs.tag }}'.TrimStart('v'))-source.tar.gz",
+            "venice-media-skill-$('${{ steps.release.outputs.tag }}'.TrimStart('v'))-source.zip",
+            "venice_media_skill-$('${{ steps.release.outputs.tag }}'.TrimStart('v'))-py3-none-any.whl",
+            "venice_media_skill-$('${{ steps.release.outputs.tag }}'.TrimStart('v')).tar.gz"
+          )
+          foreach ($Name in $Expected) {
+            if (-not (Test-Path -LiteralPath (Join-Path release-assets $Name) -PathType Leaf)) {
+              throw "Expected release asset missing: $Name"
+            }
+          }
+          $Actual = @(Get-ChildItem -LiteralPath release-assets -File)
+          if ($Actual.Count -ne $Expected.Count) { throw "Expected 5 release assets, found $($Actual.Count)" }
+
+      - name: Verify published checksums
+        run: python scripts/verify-release-assets.py release-assets
+
+      - name: Install downloaded wheel in a fresh venv and smoke CLI/resources
+        shell: pwsh
+        env:
+          VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
+          VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media/cache
+          VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media/state
+          VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media/output
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $Version = '${{ steps.release.outputs.tag }}'.TrimStart('v')
+          python -m venv release-venv
+          $VenvPython = if ($IsWindows) { 'release-venv\Scripts\python.exe' } else { 'release-venv/bin/python' }
+          $VenvCli = if ($IsWindows) { 'release-venv\Scripts\venice-media.exe' } else { 'release-venv/bin/venice-media' }
+          & $VenvPython -m pip install --upgrade pip
+          & $VenvPython -m pip install "release-assets/venice_media_skill-$Version-py3-none-any.whl"
+          if ((& $VenvCli --version) -ne "venice-media $Version") { throw 'installed version mismatch' }
+          & $VenvCli --help | Out-Null
+          & $VenvCli schema | Out-Null
+          & $VenvCli doctor
+          & $VenvPython -m pip check
+          & $VenvPython -c "from importlib import resources; r=resources.files('venice_media_skill.assets.skill'); assert all(r.joinpath(*p.split('/')).is_file() for p in ('SKILL.md','references/venice-openapi.yaml','references/request.schema.json'))"
+          New-Item -ItemType Directory -Path smoke-project | Out-Null
+          & $VenvCli install-skill --host generic --scope project --project-dir smoke-project
+          if (-not (Test-Path -LiteralPath 'smoke-project/.agents/skills/venice-media/SKILL.md' -PathType Leaf)) {
+            throw 'generic project skill install failed'
+          }
+
+      - name: Install downloaded sdist in a second fresh venv
+        shell: pwsh
+        env:
+          VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media-sdist/config
+          VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media-sdist/cache
+          VENICE_MEDIA_STATE_DIR: ${{ runner.temp }}/venice-media-sdist/state
+          VENICE_MEDIA_OUTPUT_DIR: ${{ runner.temp }}/venice-media-sdist/output
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $Version = '${{ steps.release.outputs.tag }}'.TrimStart('v')
+          python -m venv sdist-venv
+          $VenvPython = if ($IsWindows) { 'sdist-venv\Scripts\python.exe' } else { 'sdist-venv/bin/python' }
+          $VenvCli = if ($IsWindows) { 'sdist-venv\Scripts\venice-media.exe' } else { 'sdist-venv/bin/venice-media' }
+          & $VenvPython -m pip install "release-assets/venice_media_skill-$Version.tar.gz"
+          if ((& $VenvCli --version) -ne "venice-media $Version") { throw 'sdist installed version mismatch' }
+          & $VenvCli schema | Out-Null
+          & $VenvCli doctor
+          & $VenvPython -m pip check
+
+      - name: Smoke native Windows installer from published source archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $Version = '${{ steps.release.outputs.tag }}'.TrimStart('v')
+          Expand-Archive -LiteralPath "release-assets/venice-media-skill-$Version-source.zip" -DestinationPath source
+          $PublishedScripts = "source/venice-media-skill-$Version/scripts"
+          Copy-Item -LiteralPath scripts/test-install.ps1 -Destination "$PublishedScripts/test-install.ps1" -Force
+          & "$PublishedScripts/test-install.ps1" -Python python

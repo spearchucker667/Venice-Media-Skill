@@ -419,6 +419,17 @@ def test_p23_p24_lock_path_hashed_and_recovers_stale(tmp_path: Path, monkeypatch
     _release_lock(file_a)
 
 
+def test_lock_path_follows_state_file_parent_without_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from venice_media_skill import consent
+
+    monkeypatch.setattr(consent, "_LOCK_DIR", None)
+    state_file = tmp_path / "sandbox-state" / "consent_approvals.json"
+
+    lock_path = consent._get_lock_path(state_file)
+
+    assert lock_path.parent == state_file.parent / "locks"
+
+
 # Sanity: confirm the helpers exist so the new tests are discoverable.
 # ---------------------------------------------------------------------------
 # Content-routing contract regression tests

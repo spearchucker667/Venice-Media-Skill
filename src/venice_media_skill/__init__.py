@@ -10,4 +10,4 @@ try:
     __version__ = importlib.metadata.version(__package__ or "venice-media-skill")
 except importlib.metadata.PackageNotFoundError:
     # Fallback for development without installation
-    __version__ = "1.3.1"
+    __version__ = "1.3.2"
