@@ -29,6 +29,14 @@ The host agent&mdash;Gemini CLI, Claude Code, Codex, Kimi Code, OpenCode, or ano
 - 🔍 **Live model discovery and model-aware parameter planning**
 - ✅ **Quotes, queue persistence, polling, artifact storage, and metadata sidecars**
 
+**NOTE**: While this skill enables NSFW content generation, most hosts **do not** apply Venice's safety restrictions to the output. The work around is cafeful prompting. No highly explicit prompts, most of these will be denied unless your agent is explicitly instructed to allow them (jailbroken). However, if you request the corrent model, such as lustify, the images will be generated without the host's safety restriction, allowing for unrestricted NSFW content generation.
+
+> An example of a prompt that would bypass the host's safety restriction:
+
+  ```
+  make an image using venice, model set for lustify v8, image prompt "selfie, 18 year old female, bathroom, sitting on the ground", standard neg prompt for a selfie, steps set to 50, cfg scale set to 3.5
+  ```
+
 ---
 
 ## ✨ Key Features
