@@ -16,6 +16,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
 }
 
 function Invoke-Script([string]$Script, [string[]]$Arguments, [bool]$ShouldSucceed = $true) {
+    $PSNativeCommandUseErrorActionPreference = $false
     & pwsh -NoLogo -NoProfile -File $Script @Arguments
     $Code = $LASTEXITCODE
     if ($ShouldSucceed -and $Code -ne 0) { throw "$Script failed with exit code $Code" }
