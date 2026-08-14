@@ -14,14 +14,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        # Stay on a currently supported major version. Major-version bumps must
-        # be verified against the GitHub runner fleet before merging.
-        uses: actions/checkout@v7
+        # Pinned to a stable major version proven on the current runner fleet.
+        # Major-version bumps must be verified before merging.
+        uses: actions/checkout@v6
 
       - name: Set up Python 3.12
-        # Stay on a currently supported major version. Major-version bumps must
-        # be verified against the GitHub runner fleet before merging.
-        uses: actions/setup-python@v7
+        # Pinned to a stable major version proven on the current runner fleet.
+        # Major-version bumps must be verified before merging.
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
