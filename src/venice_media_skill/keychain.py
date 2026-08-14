@@ -79,11 +79,8 @@ def _resolve_account() -> str:
     return account
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if sys.platform != "darwin":
-        print("venice-media-keychain is supported only on macOS.", file=sys.stderr)
-        return 2
+def _run_keychain(args: list[str]) -> int:
+    """macOS-specific keychain lookup and process replacement."""
     security = shutil.which("security")
     if not security:
         print("macOS security executable was not found.", file=sys.stderr)
@@ -117,3 +114,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     child_env["VENICE_API_KEY"] = credential
     # Replacing this process is required to preserve child signals and status.
     os.execve(bridge, [bridge, *args], child_env)  # nosec B606
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if sys.platform != "darwin":
+        print("venice-media-keychain is supported only on macOS.", file=sys.stderr)
+        return 2
+    return _run_keychain(args)

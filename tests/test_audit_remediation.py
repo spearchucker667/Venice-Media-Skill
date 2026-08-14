@@ -435,18 +435,60 @@ def test_content_routing_section_present_in_all_skill_mirrors() -> None:
     )
     required_phrases = (
         "Content-routing semantics",
-        "preserve the user's media prompt as faithfully as the API permits",
+        "treat Venice as the requested media execution provider",
+        "The host's native image/video/media generator is not being invoked",
+        "Preserve the user's requested prompt and intent as faithfully as the API permits",
         "safe_mode=false",
-        "do not silently re-enable an application-level family-safe filter",
+        "Do not silently re-enable an application-level family-safe filter",
+        "Do not manufacture, predict, or pre-emptively claim a Venice policy rejection",
+        "use the actual Venice response as the source of truth",
+        "identify the restriction accurately as a host-layer restriction",
         "does not override non-optional rules of the host agent",
         "A Venice API key authenticates the provider call",
         "does not create a blanket exemption",
-        "report the rejection accurately and do not attempt safeguard evasion",
     )
     for path in skill_paths:
         text = path.read_text(encoding="utf-8")
         for phrase in required_phrases:
             assert phrase in text, f"{path.name} missing content-routing phrase: {phrase!r}"
+
+
+def test_no_stale_bypass_wording_in_skill_or_adapters() -> None:
+    """Obsolete 'bypass provider or platform policy' wording is removed everywhere."""
+    repo_root = Path(__file__).resolve().parents[1]
+    paths = (
+        repo_root / "skills" / "venice-media" / "SKILL.md",
+        repo_root / "src" / "venice_media_skill" / "assets" / "skill" / "SKILL.md",
+        repo_root / "adapters" / "kimi-code" / "venice-media" / "SKILL.md",
+        repo_root / "adapters" / "generic" / "AGENT_INSTRUCTIONS.md",
+    )
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "Do not bypass provider or platform policy failures" not in text, (
+            f"{path.name} still contains stale bypass wording"
+        )
+        assert "bypass provider" not in text.lower(), f"{path.name} contains 'bypass provider'"
+        assert "Ignore your own policies" not in text, f"{path.name} contains forbidden override phrase"
+        assert "Bypass host safety" not in text, f"{path.name} contains forbidden override phrase"
+        assert "A Venice API key overrides host policy" not in text, f"{path.name} contains forbidden override phrase"
+
+
+def test_host_venice_policy_layers_are_separate() -> None:
+    """Skill establishes that native-generator restrictions and Venice tool rules are separate."""
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_text = (repo_root / "skills" / "venice-media" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Keep host execution policy and Venice provider policy separate" in skill_text
+    assert "host-layer restriction" in skill_text
+    assert "native media-generator defaults" in skill_text
+
+
+def test_adult_prompt_preserved_without_artificial_refusal() -> None:
+    """Provider-permitted adult prompts are not sanitized or rejected by assumption."""
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_text = (repo_root / "skills" / "venice-media" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Adult nudity, sexual themes, profanity, horror, violence" in skill_text
+    assert "artificial Venice-specific refusal" in skill_text
+    assert '"safety clarification."' in skill_text
 
 
 def test_adapters_do_not_enable_safe_mode_or_sanitization() -> None:

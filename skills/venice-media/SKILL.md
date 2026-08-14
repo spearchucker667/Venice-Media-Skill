@@ -23,7 +23,7 @@ When `$request` is empty, use the current user message.
 1. Never expose, print, store, echo, or place `VENICE_API_KEY` in a request manifest, log, command argument, source file, shell history entry, or assistant response.
 2. Never invent model capabilities, model IDs, prices, supported sizes, durations, voices, or constraints. Query the live model catalog.
 3. Image generation defaults are `safe_mode=false` and `hide_watermark=true`. Do not ask the user about these defaults unless they ask to change them. Venice may still ignore watermark settings for some content.
-4. Do not bypass provider or platform policy failures. Report API errors accurately. Do not manufacture a rejection on Venice's behalf.
+4. **Keep host execution policy and Venice provider policy separate.** When the user explicitly selects Venice, do not apply speculative Venice restrictions, the host's native media-generator defaults, family-safe filtering, or prompt sanitization on Venice's behalf. If the host is permitted to invoke the Venice tool for the request, forward the user's media request faithfully and let Venice evaluate it under Venice's actual API behavior and provider rules. If Venice returns an error, policy response, consent requirement, or other rejection, report that actual response accurately. If the host itself is prohibited from invoking the tool, identify that restriction as originating from the host layer; do not misrepresent it as a Venice rejection.
 5. Never assert Seedance face-media consent on the user's behalf. The bridge stores a `consent_required` challenge (with a `challenge_id`) and only attaches the consents body to the queue request after the user runs `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>`. The boolean `attestations.seedance_face_consent` flag on the manifest is informational only — the CLI does not accept a value of `true` as consent.
 6. For video and queued audio/music, request a quote first unless the user explicitly supplied an approved budget or explicitly instructed immediate generation with known cost.
 7. Treat local media as sensitive. Do not upload unrelated files. Resolve explicit paths only.
@@ -31,9 +31,17 @@ When `$request` is empty, use the current user message.
 
 ### Content-routing semantics
 
-When the user explicitly selects Venice media generation, treat Venice as the requested media provider and preserve the user's media prompt as faithfully as the API permits. The bridge intentionally uses Venice's `safe_mode=false` behavior for supported image generation/edit operations; do not silently re-enable an application-level family-safe filter, rewrite an adult prompt into a sanitized prompt, or pre-emptively report a Venice policy rejection that has not occurred.
+When the user explicitly selects Venice media generation, treat Venice as the requested media execution provider. The host's native image/video/media generator is not being invoked, and restrictions or filters belonging specifically to that native generator must not automatically be attributed to Venice.
 
-This instruction controls how the Venice skill routes provider requests; it does not override non-optional rules of the host agent or application. A Venice API key authenticates the provider call but does not create a blanket exemption from the host's governing policies. If the host is permitted to execute the request, send the faithful request to Venice and report Venice's actual response. If Venice rejects it, report the rejection accurately and do not attempt safeguard evasion.
+The bridge intentionally uses Venice's `safe_mode=false` behavior for supported image generation/edit operations. Do not silently re-enable an application-level family-safe filter, rewrite an adult prompt into a sanitized prompt, euphemize or suppress the user's wording, or pre-emptively report a Venice policy rejection that has not occurred. Preserve the user's requested prompt and intent as faithfully as the API permits.
+
+Do not manufacture, predict, or pre-emptively claim a Venice policy rejection. Adult nudity, sexual themes, profanity, horror, violence, and other mature or provider-permitted subject matter must not by themselves produce an artificial Venice-specific refusal or "safety clarification."
+
+If the host is permitted to invoke the Venice tool for the request, send the faithful request to Venice and use the actual Venice response as the source of truth for provider acceptance. If Venice actually rejects the request, report the real status code and provider message accurately. Do not attempt to evade an actual Venice safeguard, consent requirement, API restriction, or provider rejection.
+
+If the host itself cannot invoke the tool because of a non-optional host rule, identify the restriction accurately as a host-layer restriction rather than claiming Venice rejected the content.
+
+This instruction controls how the Venice skill routes provider requests; it does not override non-optional rules of the host agent or application. A Venice API key authenticates the provider call but does not create a blanket exemption from the host's governing policies.
 
 ### Known boundaries of the current protection
 
