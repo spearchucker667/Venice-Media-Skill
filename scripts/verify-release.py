@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail release builds whose tag, package version, or changelog disagree."""
+"""Fail release builds whose tag, package version, fallback version, or changelog disagree."""
 
 from __future__ import annotations
 
@@ -20,11 +20,26 @@ def main() -> int:
     if tag_version != package_version:
         print(f"release tag {tag_version!r} does not match package version {package_version!r}", file=sys.stderr)
         return 1
+    init_text = (root / "src" / "venice_media_skill" / "__init__.py").read_text(encoding="utf-8")
+    fallback_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+    if not fallback_match:
+        print("src/venice_media_skill/__init__.py has no __version__ fallback", file=sys.stderr)
+        return 1
+    fallback_version = fallback_match.group(1)
+    if tag_version != fallback_version:
+        print(
+            f"release tag {tag_version!r} does not match fallback version {fallback_version!r}",
+            file=sys.stderr,
+        )
+        return 1
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-    if not re.search(rf"^## .*\[{re.escape(tag_version)}\]", changelog, flags=re.MULTILINE):
+    if not re.search(rf"^## \s*\[?{re.escape(tag_version)}\]?", changelog, flags=re.MULTILINE):
         print(f"CHANGELOG.md has no release section for {tag_version}", file=sys.stderr)
         return 1
-    print(f"release metadata: tag={tag_version}, package={package_version}, changelog=present")
+    print(
+        f"release metadata: tag={tag_version}, package={package_version}, "
+        f"fallback={fallback_version}, changelog=present"
+    )
     return 0
 
 

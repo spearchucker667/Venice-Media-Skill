@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from .catalog import ModelCatalog
 
-MODELLESS_OPERATIONS = {"image.upscale", "image.background_remove"}
+MODELLESS_OPERATIONS = {"image.upscale", "image.background_remove", "video.transcribe"}
 
 _OPERATION_MODEL_TYPE = {
     "image.generate": "image",
@@ -19,6 +19,7 @@ _OPERATION_MODEL_TYPE = {
     "audio.generate": "music",
     "audio.tts": "tts",
     "audio.transcribe": "asr",
+    "audio.voice_clone": "tts",
 }
 
 
@@ -150,6 +151,8 @@ def _questions_for_model(
         "image.upscale",
         "image.background_remove",
         "audio.transcribe",
+        "video.transcribe",
+        "audio.voice_clone",
     }:
         questions.append(_question("prompt", True, "What should Venice create or change?"))
 
@@ -216,6 +219,19 @@ def _questions_for_model(
                     ["webp", "png", "jpeg"],
                     default="webp",
                 ),
+                _question(
+                    "parameters.enhance_prompt",
+                    False,
+                    "Enhance the prompt before generation (may add cost and latency)?",
+                    [True, False],
+                    default=False,
+                ),
+                _question(
+                    "inputs.style_references",
+                    False,
+                    "Style reference images? List of {image, strength?} objects.",
+                    default=None,
+                ),
             ]
         )
     elif operation in {"image.edit", "image.multi_edit"}:
@@ -256,6 +272,24 @@ def _questions_for_model(
                 "Output format?",
                 ["png", "jpeg", "webp"],
                 default="png",
+            )
+        )
+        questions.append(
+            _question(
+                "parameters.enhance_prompt",
+                False,
+                "Enhance the edit prompt before editing (may add cost and latency)?",
+                [True, False],
+                default=False,
+            )
+        )
+        questions.append(
+            _question(
+                "parameters.disable_prompt_optimization_thinking",
+                False,
+                "Skip prompt-optimization thinking for faster generation?",
+                [True, False],
+                default=False,
             )
         )
     elif operation == "image.upscale":
@@ -300,6 +334,14 @@ def _questions_for_model(
         if "image-to-video" in model_type:
             questions.append(_question("inputs.image", True, "Which first-frame image should drive the video?"))
         questions.append(_question("parameters.negative_prompt", False, "Anything the video should avoid?", default=""))
+        questions.append(
+            _question(
+                "inputs.keyframes",
+                False,
+                "Keyframe images? List of {image, frame_index} objects (max 10).",
+                default=None,
+            )
+        )
     elif operation == "audio.tts":
         voices = _list_value(constraints, "voices") or _list_value(model_spec, "voices")
         if voices:
@@ -316,6 +358,10 @@ def _questions_for_model(
                     default="mp3",
                 ),
                 _question("parameters.speed", False, "Speech speed?", default=1.0),
+                _question("parameters.language", False, "Language hint?", default=None),
+                _question("parameters.style_prompt", False, "Style/emotion prompt?", default=None),
+                _question("parameters.temperature", False, "Sampling temperature (0-2)?", default=None),
+                _question("parameters.top_p", False, "Nucleus sampling top_p (0-1)?", default=None),
             ]
         )
     elif operation == "audio.generate":
@@ -341,8 +387,28 @@ def _questions_for_model(
                     default="",
                 )
             )
+        if constraints.get("supports_loop"):
+            questions.append(
+                _question(
+                    "parameters.loop",
+                    False,
+                    "Render a seamless loop?",
+                    [True, False],
+                    default=False,
+                )
+            )
     elif operation == "audio.transcribe":
         questions.append(_question("inputs.audio", True, "Which local audio file should be transcribed?"))
+    elif operation == "video.transcribe":
+        questions.append(_question("inputs.url", True, "Which YouTube video URL should be transcribed?"))
+    elif operation == "audio.voice_clone":
+        questions.append(
+            _question(
+                "inputs.audio",
+                True,
+                "Which clean speech audio file (MP3/WAV/FLAC/M4A) should be cloned?",
+            )
+        )
     return questions
 
 
@@ -397,5 +463,9 @@ def _defaults_for_operation(operation: str) -> dict[str, Any]:
     elif operation == "audio.tts":
         params.update({"response_format": "mp3", "speed": 1.0})
     elif operation == "audio.generate":
+        pass
+    elif operation == "video.transcribe":
+        params["response_format"] = "json"
+    elif operation == "audio.voice_clone":
         pass
     return {"parameters": params, "execution": execution}

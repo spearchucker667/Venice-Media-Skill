@@ -49,6 +49,7 @@ ENDPOINT_SIZE_LIMITS: dict[str, int] = {
     "image.multi_edit": 25 * 1024 * 1024,
     "image.background_remove": 25 * 1024 * 1024,
     "audio.transcribe": 15 * 1024 * 1024,
+    "audio.voice_clone": 25 * 1024 * 1024,
     "video.generate": 500 * 1024 * 1024,
     "audio.generate": 500 * 1024 * 1024,
     "default": 50 * 1024 * 1024,
@@ -108,6 +109,8 @@ class MediaRunner:
                 return self._video_generate(request)
             if operation == "video.retrieve":
                 return self._retrieve_existing(request, media_type="video")
+            if operation == "video.transcribe":
+                return self._video_transcribe(request)
             if operation == "audio.tts":
                 return self._tts(request)
             if operation == "audio.generate":
@@ -116,6 +119,8 @@ class MediaRunner:
                 return self._retrieve_existing(request, media_type="audio")
             if operation == "audio.transcribe":
                 return self._transcribe(request)
+            if operation == "audio.voice_clone":
+                return self._voice_clone(request)
         except ValueError as exc:
             raise RequestValidationError(str(exc)) from exc
         raise RequestValidationError(f"Unsupported operation: {operation}")
@@ -211,6 +216,44 @@ class MediaRunner:
         metadata_payload = redact_data(metadata_raw)
         metadata_mapping: dict[str, Any] = metadata_payload if isinstance(metadata_payload, dict) else metadata_raw
         return self._save_transcript(request, response, api_request=metadata_mapping)
+
+    def _video_transcribe(self, request: MediaRequest) -> dict[str, Any]:
+        canonical = payloads.build_video_transcribe(request)
+        if request.execution.dry_run:
+            return self._dry_run(request, canonical, include_inputs=False)
+        response = self.client.request("POST", canonical.endpoint, json_body=dict(canonical.payload))
+        return self._save_transcript(request, response, api_request=canonical.payload)
+
+    def _voice_clone(self, request: MediaRequest) -> dict[str, Any]:
+        canonical = payloads.build_voice_clone(request)
+        audio = request.inputs.get("audio")
+        if not isinstance(audio, str):
+            raise RequestValidationError("audio.voice_clone requires a local path in inputs.audio.")
+        path = Path(audio).expanduser().resolve()
+        if not path.is_file():
+            raise RequestValidationError(f"Audio file does not exist: {path}")
+        size_limit = ENDPOINT_SIZE_LIMITS["audio.voice_clone"]
+        actual_size = path.stat().st_size
+        if actual_size > size_limit:
+            raise RequestValidationError(
+                f"audio.voice_clone input is {actual_size} bytes; endpoint limit is {size_limit} bytes: {path}"
+            )
+        data = dict(canonical.payload)
+        if request.execution.dry_run:
+            return {
+                "status": "dry_run",
+                "operation": request.operation,
+                "endpoint": canonical.endpoint,
+                "multipart": {"file": str(path), **data},
+            }
+        with path.open("rb") as handle:
+            response = self.client.request(
+                "POST",
+                canonical.endpoint,
+                files={"file": (path.name, handle, "application/octet-stream")},
+                data=data,
+            )
+        return self._save_json_response(request, response, api_request=data)
 
     # -- paid queued ops ----------------------------------------------------
 
@@ -642,6 +685,60 @@ class MediaRunner:
             _atomic_write_bytes(resolved, response.content)
         else:
             raise OutputError("Transcription response was empty.")
+        artifact = {
+            "path": str(resolved),
+            "content_type": response.content_type,
+            "bytes": resolved.stat().st_size,
+        }
+        if request.output.write_metadata:
+            sidecar = resolved.with_suffix(resolved.suffix + ".metadata.json")
+            sidecar_payload = {
+                "schema_version": 1,
+                "created_at": utc_now_iso(),
+                "operation": request.operation,
+                "model": request.model,
+                "api_request": redact_data(dict(api_request)),
+                "artifact": artifact,
+            }
+            _atomic_write_text(sidecar, json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n")
+            artifact["metadata_path"] = str(sidecar.resolve())
+        return {"status": "completed", "operation": request.operation, "artifacts": [artifact]}
+
+    def _save_json_response(
+        self,
+        request: MediaRequest,
+        response: ApiResponse,
+        *,
+        api_request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        directory = (
+            Path(request.output.directory).expanduser() if request.output.directory else self.writer.default_output_dir
+        )
+        directory = directory.resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+
+        filename = request.output.filename or f"{request.operation.replace('.', '-')}-{timestamp_slug()}.json"
+        if request.output.filename:
+            from .output import _validate_safe_filename  # local import
+
+            _validate_safe_filename(request.output.filename)
+
+        candidate = directory / filename
+        resolved = candidate.resolve()
+        if not resolved.parent.samefile(directory):
+            raise OutputError(f"output.filename resolves to {resolved} which is outside {directory}")
+        if resolved.exists() and not request.output.overwrite:
+            resolved = resolved.with_name(f"{resolved.stem}-{timestamp_slug()}{resolved.suffix}")
+
+        from .output import _atomic_write_bytes, _atomic_write_text  # local
+
+        if response.json_data is not None:
+            text = json.dumps(response.json_data, indent=2, ensure_ascii=False) + "\n"
+            _atomic_write_text(resolved, text)
+        elif response.content is not None:
+            _atomic_write_bytes(resolved, response.content)
+        else:
+            raise OutputError("Response was empty.")
         artifact = {
             "path": str(resolved),
             "content_type": response.content_type,

@@ -24,14 +24,12 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Checkout repository
-        # Pinned to a stable major version proven on the current runner fleet.
-        # Major-version bumps must be verified before merging.
-        uses: actions/checkout@v6
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Set up Python ${{ matrix.python-version }}
-        # Pinned to a stable major version proven on the current runner fleet.
-        # Major-version bumps must be verified before merging.
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -83,10 +81,12 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
           cache: pip
@@ -131,10 +131,12 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -186,10 +188,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
 
@@ -232,10 +236,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
           cache: pip

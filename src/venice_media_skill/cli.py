@@ -624,9 +624,11 @@ def _validate_openapi(path: Path) -> dict[str, Any]:
         "/audio/queue",
         "/audio/retrieve",
         "/audio/quote",
+        "/audio/voices",
         "/video/queue",
         "/video/retrieve",
         "/video/quote",
+        "/video/transcriptions",
     }
     missing = sorted(required.difference(paths))
     if not missing:

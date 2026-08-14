@@ -1,220 +1,126 @@
-# 🚀 Release Process
+# Release Process
 
 *Back to: [README.md](../README.md) | [CHANGELOG.md](../CHANGELOG.md)*
 
----
-
-This document describes the release process for Venice Media Skill. Releases are automated via GitHub Actions, but require manual preparation and validation.
+Releases are automated via `.github/workflows/release.yml`. This document describes the manual preparation and validation required before pushing a tag.
 
 ---
 
-## ✅ Pre-Release Checklist
+## Pre-release checklist
 
-### 1. 📚 Documentation & API Snapshot
+### 1. API snapshot and documentation
 
-- [ ] **Refresh Venice OpenAPI snapshot** or intentionally retain existing version
-- [ ] **Record provenance** in the snapshot file:
-  - Source URL
-  - Retrieval date
-  - API content version
-- [ ] **Review API changes** affecting:
-  - Request schemas
-  - Queue responses
-  - Consent flows
-  - Model metadata
+- [ ] Decide whether the release requires refreshing the Venice OpenAPI snapshot.
+- [ ] If refreshing, run `python scripts/sync-venice-api-docs.py --upstream <path> [--pin <sha>]`.
+- [ ] Verify provenance in `references/venice-openapi.yaml` points to the exact upstream commit.
+- [ ] Review API changes affecting request schemas, queue responses, consent flows, and model metadata.
+- [ ] Update `docs/media-generation-guide.md` and examples for any new operation or field.
 
-### 2. 📝 Version Updates
+### 2. Version updates
 
-- [ ] **Update `CHANGELOG.md`** with new version entry
-- [ ] **Update version** in `pyproject.toml`
-- [ ] **Update version** in `src/venice_media_skill/__init__.py`
-- [ ] **Verify consistency** across all version references
+- [ ] Update `CHANGELOG.md` with a release section for the target version.
+- [ ] Update `version` in `pyproject.toml`.
+- [ ] Update the fallback version in `src/venice_media_skill/__init__.py`.
+- [ ] Search for stale version strings with `rg '0\.1\.0|1\.2\.0'` and update only current-version references.
 
-### 3. ⚡ Validation
+### 3. Validation
 
-- [ ] **Run full validation suite** on multiple Python versions:
+- [ ] Run the full validation suite:
   ```bash
   ./scripts/validate.sh
   ```
-- [ ] **Test on Python 3.11** (minimum supported)
-- [ ] **Test on at least one newer Python version** (3.12, 3.13, or 3.14)
+- [ ] Verify release metadata:
+  ```bash
+  python scripts/verify-release.py vX.Y.Z
+  ```
 
-### 4. 📦 Installation Testing
+### 4. Smoke testing
 
-- [ ] **Test install scripts** on:
-  - [ ] macOS
-  - [ ] Linux
-  - [ ] Windows PowerShell
-- [ ] **Verify successful installation** on each platform
+- [ ] Run dry-run examples for each changed media surface.
+- [ ] Run one authorized, bounded, low-cost smoke test per changed media surface if an API key is available.
 
-### 5. 🧪 Smoke Testing
+### 5. Security audit
 
-- [ ] **Run all dry-run examples** for each supported operation:
-  - Image generation
-  - Image editing
-  - Video generation
-  - TTS
-  - Audio transcription
-  - Music generation
-- [ ] **Run one authorized smoke test** per changed media surface
-- [ ] **Verify all tests pass** with `pytest`
-
-### 6. 🔒 Security Audit
-
-- [ ] **Verify artifacts and sidecars** contain no credentials
-- [ ] **Check for accidentally committed secrets**
-- [ ] **Ensure no API keys** are bundled
-- [ ] **Confirm no `.env` files** are included
-- [ ] **Verify no virtual environment files** are bundled
-- [ ] **Check no local queue state** is included
-- [ ] **Confirm no model cache** is bundled
-- [ ] **Ensure no generated media** is committed
+- [ ] Verify artifacts and sidecars contain no credentials.
+- [ ] Check for accidentally committed secrets.
+- [ ] Ensure no API keys, `.env` files, virtual environments, local queue state, model cache, or generated media are bundled.
 
 ---
 
-## 🏗️ Build Process
+## Build and publish
 
-### 1. Build Distributions
+### Create the tag
 
-```bash
-# Clean any previous builds
-rm -rf dist/ build/
-
-# Build wheel and source distribution
-python -m build --wheel --sdist
-
-# Verify artifacts exist
-ls -la dist/
-```
-
-### 2. Inspect Distribution Contents
+Only tag from a clean `main` whose CI has passed.
 
 ```bash
-# Unpack and inspect wheel
-unzip -l dist/venice_media_skill-*.whl
-
-# Unpack and inspect source distribution
-tar -tzf dist/venice_media_skill-*.tar.gz
-
-# Verify no sensitive files are included
-# Check for: .env, .venv, __pycache__, *.pyc, *.key, etc.
-```
-
----
-
-## 📦 Publishing
-
-### 1. Create Git Tag
-
-```bash
-# Create annotated tag
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
-
-# Push tag to origin
+git fetch origin --tags --prune
+git status --short
+test -z "$(git status --porcelain)"
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+python scripts/verify-release.py vX.Y.Z
+git tag -a vX.Y.Z -m "Venice Media Skill vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-### 2. GitHub Actions Automation
+### Release workflow
 
-- GitHub Actions workflow (`.github/workflows/release.yml`) automatically:
-  1. Triggers on new tags matching `v*` pattern
-  2. Verifies tag matches package version (via `verify-release.py`)
-  3. Builds wheel and source distribution
-  4. Creates GitHub Release
-  5. Attaches artifacts to the release
+`.github/workflows/release.yml` triggers on tags matching `v*` and:
 
-### 3. Manual Verification
+1. Verifies the tag matches package version and changelog.
+2. Runs the full validation contract.
+3. Builds wheel and sdist.
+4. Builds source archives and a `SHA256SUMS.txt` file.
+5. Creates a GitHub Release with `generate_release_notes: true` and attaches all artifacts in `dist/`.
 
-- [ ] **Verify GitHub Release** was created successfully
-- [ ] **Confirm artifacts** are attached to the release
-- [ ] **Check release notes** are populated from CHANGELOG
-- [ ] **Test installation from wheel or sdist** (if published)
+Release notes are generated by GitHub, not copied from `CHANGELOG.md`. The changelog remains the human-readable version history.
 
----
+### Manual verification
 
-## ❌ Prohibited Actions
-
-**NEVER do the following:**
-
-- ❌ Publish from a dirty working tree
-- ❌ Bundle `.env` files
-- ❌ Bundle virtual environments
-- ❌ Bundle local queue state
-- ❌ Bundle model cache
-- ❌ Bundle generated media
-- ❌ Bundle API keys or credentials
-- ❌ Skip validation steps
-- ❌ Release without CHANGELOG updates
-- ❌ Release without version updates
+- [ ] Confirm the GitHub Release was created.
+- [ ] Confirm distributions, source archives, and `SHA256SUMS.txt` are attached.
+- [ ] Verify checksums:
+  ```bash
+  sha256sum -c SHA256SUMS.txt
+  ```
+- [ ] Install the wheel in a fresh venv and run `venice-media --help`, `venice-media schema`, `venice-media doctor`, and `pip check`.
 
 ---
 
-## 🎯 Release Types
+## Prohibited actions
 
-| Type | Version Bump | When to Use |
-|------|--------------|-------------|
-| **MAJOR** | `X.0.0` | Breaking changes, API incompatibilities |
-| **MINOR** | `0.Y.0` | New features, backwards-compatible |
-| **PATCH** | `0.0.Z` | Bug fixes, backwards-compatible |
+**Never do the following:**
 
----
-
-## 📊 Release Statistics
-
-Track release metrics:
-
-| Metric | Command/Location |
-|--------|------------------|
-| Version | `pyproject.toml`, `__init__.py` |
-| Files | `git ls-files` |
-| Lines of code | `cloc src/` |
-| Test coverage | `pytest --cov-report=term-missing` |
-| Artifact sizes | `ls -la dist/` |
+- ❌ Publish from a dirty working tree.
+- ❌ Bundle `.env` files, virtual environments, local queue state, model cache, generated media, or credentials.
+- ❌ Skip validation steps.
+- ❌ Release without updating `pyproject.toml`, `src/venice_media_skill/__init__.py`, and `CHANGELOG.md`.
+- ❌ Force-move, rewrite, or delete a published release tag.
 
 ---
 
-## 🔄 Post-Release
+## Version bumps
 
-### 1. Announcement
+This project uses [Semantic Versioning](https://semver.org/):
 
-- [ ] **Create GitHub Release** (if not automated)
-- [ ] **Update GitHub Discussions** with release announcement
-- [ ] **Post to community channels** (if applicable)
-
-### 2. Version Bump for Next Cycle
-
-```bash
-# Bump version for next development cycle
-# e.g., from 0.1.0 to 0.1.1-SNAPSHOT or 0.2.0-SNAPSHOT
-```
-
-### 3. Monitor
-
-- [ ] **Watch for issues** related to the new release
-- [ ] **Address critical bugs** with patch releases if needed
+| Type | Bump | When |
+|---|---|---|
+| MAJOR | `X.0.0` | Breaking changes to manifest or CLI behavior |
+| MINOR | `0.Y.0` | New features, backwards-compatible |
+| PATCH | `0.0.Z` | Bug fixes, backwards-compatible |
 
 ---
 
-## 🤖 Automation
+## Post-release
 
-The release process is partially automated via:
-
-- **GitHub Actions** (`.github/workflows/release.yml`) - Build and release automation
-- **Build Script** (`python -m build`) - Wheel and sdist generation
-- **Validation Script** (`./scripts/validate.sh`) - Pre-release validation
+1. Monitor issues related to the new release.
+2. Address critical bugs with patch releases if needed.
 
 ---
 
-## 📚 Related Documentation
+## Related documentation
 
-- [CHANGELOG](../CHANGELOG.md) - Version history and changes
-- [Contributing Guide](../CONTRIBUTING.md) - Development guidelines
-- [Validation Script](../scripts/validate.sh) - Pre-release checks
-
----
-
-<div align="center">
-
-[⬅️ Back to README](../README.md) | [Top](#-release-process)
-
-</div>
+- [CHANGELOG](../CHANGELOG.md)
+- [Contributing Guide](../CONTRIBUTING.md)
+- [API sync procedure](api-sync.md)
+- [Validation Script](../scripts/validate.sh)

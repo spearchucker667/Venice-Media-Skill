@@ -8,7 +8,7 @@ The bridge never runs an LLM loop, never calls Venice chat completions, and neve
 
 ## Project overview
 
-- **Package:** `venice-media-skill` — version is read from package metadata at runtime (`src/venice_media_skill/__init__.py`).
+- **Package:** `venice-media-skill` — version is read from package metadata at runtime, with a fallback in `src/venice_media_skill/__init__.py`.
 - **Language / runtime:** Python 3.11+ (`requires-python = ">=3.11"`).
 - **Build backend:** Hatchling (`pyproject.toml`).
 - **Console entry points:**
@@ -24,8 +24,8 @@ Supported operation families:
 | Media | Operations |
 | --- | --- |
 | Images | `image.generate`, `image.edit`, `image.multi_edit`, `image.upscale`, `image.background_remove` |
-| Video | `video.generate`, `video.retrieve` |
-| Audio | `audio.generate`, `audio.retrieve`, `audio.tts`, `audio.transcribe` |
+| Video | `video.generate`, `video.retrieve`, `video.transcribe` |
+| Audio | `audio.generate`, `audio.retrieve`, `audio.tts`, `audio.transcribe`, `audio.voice_clone` |
 
 Video editing/extension/stitching/reference workflows are expressed through `video.generate` inputs and prompt tokens, not separate bridge operation names.
 
@@ -63,6 +63,8 @@ Targeted commands:
 | Single test | `python -m pytest tests/test_security.py::TestReservedParameterRejection -q` |
 | OpenAPI snapshot check | `python -m venice_media_skill validate-openapi references/venice-openapi.yaml` |
 | Regenerate request schema | `python -m venice_media_skill schema --output references/request.schema.json` |
+| Sync upstream API docs | `python scripts/sync-venice-api-docs.py --upstream <path> [--pin <sha>]` |
+| Verify release metadata | `python scripts/verify-release.py vX.Y.Z` |
 | Editable install | `python -m pip install -e '.[dev]'` |
 | Build wheel + sdist | `python -m build` |
 
@@ -107,7 +109,8 @@ references/                    Bundled, reviewed API references (do not treat as
 examples/requests/             Example request manifests for dry-run / manual testing
 tests/                         Offline test suite (no live Venice calls)
 scripts/                       install.sh, install.ps1, uninstall.sh, validate.sh,
-                               inspect-sdist.py, verify-bundled-assets.py, refresh-openapi.sh,
+                               inspect-sdist.py, verify-bundled-assets.py,
+                               sync-venice-api-docs.py, refresh-openapi.sh,
                                venice-media-keychain (macOS launcher)
 docs/                          architecture, threat-model, host-integrations, releasing, ...
 ```
@@ -119,6 +122,26 @@ The Skill bundle has three mirrors that must stay byte-identical:
 - `src/venice_media_skill/assets/skill/`
 
 The reference set also has a canonical source in `references/` and is mirrored into each Skill tree. `scripts/verify-bundled-assets.py` enforces parity in CI.
+
+## Canonical vs mirrored files
+
+| Canonical | Mirrors | Enforcer |
+|---|---|---|
+| `skills/venice-media/` | `adapters/kimi-code/venice-media/`, `src/venice_media_skill/assets/skill/` | `scripts/verify-bundled-assets.py` |
+| `references/venice-openapi.yaml` | inside each skill tree under `references/` | `scripts/verify-bundled-assets.py` |
+| `references/request.schema.json` | inside each skill tree under `references/` | `scripts/verify-bundled-assets.py` |
+
+Never hand-edit one mirror. Edit the canonical file, then regenerate or sync through the deterministic scripts.
+
+## API-sync procedure
+
+1. Clone or update `https://github.com/veniceai/api-docs`.
+2. Run `python scripts/sync-venice-api-docs.py --upstream <path> [--pin <sha>]`.
+3. The script writes `references/venice-openapi.yaml`, mirrors it, regenerates `references/request.schema.json`, and records upstream provenance.
+4. Run `./scripts/validate.sh`.
+5. Update tests and docs for any contract change.
+
+See [docs/api-sync.md](docs/api-sync.md) for the full workflow and `docs/api-reference-snapshot.md` for current upstream provenance.
 
 ## Code style and conventions
 
@@ -228,7 +251,7 @@ Always treat the bundled OpenAPI snapshot (`references/venice-openapi.yaml`) as 
 - Releases are driven by Git tags matching `v*`; `.github/workflows/release.yml` builds and publishes the GitHub Release.
 - Pre-release checklist is in `docs/releasing.md`.
 - Never publish from a dirty tree, never bundle `.env` files, virtual environments, queue state, model cache, generated media, or API keys.
-- Version bumps must update both `pyproject.toml` and `CHANGELOG.md`.
+- Version bumps must update `pyproject.toml`, `src/venice_media_skill/__init__.py`, and `CHANGELOG.md`.
 
 ## Pointers for deeper work
 
@@ -236,6 +259,6 @@ Always treat the bundled OpenAPI snapshot (`references/venice-openapi.yaml`) as 
 - Threat model and security limitations: `docs/threat-model.md`, `docs/security-and-privacy.md`
 - Per-operation field guidance: `docs/media-generation-guide.md`
 - Per-host setup: `docs/host-integrations.md`
-- API snapshot policy: `docs/api-reference-snapshot.md`
+- API sync procedure and snapshot provenance: `docs/api-sync.md`, `docs/api-reference-snapshot.md`
 - Release process: `docs/releasing.md`
 - Contributing checklist: `CONTRIBUTING.md`

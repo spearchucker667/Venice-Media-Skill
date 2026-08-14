@@ -44,4 +44,5 @@ with tempfile.TemporaryDirectory() as tmp:
 print('Schema: meta-valid, in-sync, drift=0')
 PY
 python scripts/verify-bundled-assets.py
+python scripts/check-doc-links.py
 python scripts/inspect-sdist.py

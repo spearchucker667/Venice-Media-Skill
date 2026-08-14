@@ -45,10 +45,11 @@ FORBIDDEN_TOKENS: tuple[str, ...] = (
 
 
 def _find_sdist(dist_dir: Path) -> Path | None:
-    for candidate in sorted(dist_dir.glob("*.tar.gz")):
-        if candidate.name.startswith("venice_media_skill-"):
-            return candidate
-    return None
+    candidates = [p for p in dist_dir.glob("*.tar.gz") if p.name.startswith("venice_media_skill-")]
+    if not candidates:
+        return None
+    # Prefer the most recently built sdist when stale artifacts remain.
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _is_symlink_escape(link_target: str) -> bool:

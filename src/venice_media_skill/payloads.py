@@ -49,6 +49,8 @@ __all__ = [
     "build_tts",
     "build_video_queue",
     "build_video_quote",
+    "build_video_transcribe",
+    "build_voice_clone",
     "sha256_hex",
 ]
 
@@ -205,6 +207,8 @@ def build_image_generate(request: MediaRequest) -> CanonicalPayload:
     }
     payload.update(body)
     payload.setdefault("format", "webp")
+    if "style_references" in request.inputs:
+        payload["style_references"] = _build_style_references(request.inputs["style_references"])
     payload.update(output_plan.wire_fields())
     return _wrap(
         request,
@@ -279,7 +283,13 @@ def build_image_background_remove(request: MediaRequest) -> CanonicalPayload:
 
 
 def build_tts(request: MediaRequest) -> CanonicalPayload:
-    """``POST /audio/speech`` - canonical provider body."""
+    """``POST /audio/speech`` - canonical provider body.
+
+    The bridge uses top-level ``prompt`` as the TTS input text (provider
+    ``input``). ``parameters.style_prompt`` is the manifest alias for the
+    provider's style ``prompt`` field; the reserved-key gate prevents a
+    bare ``parameters.prompt`` from bypassing this mapping.
+    """
     if request.model is None or request.prompt is None:
         raise ValueError("audio.tts requires model and prompt")
     allowed = allowed_parameter_names("audio.tts")
@@ -288,6 +298,8 @@ def build_tts(request: MediaRequest) -> CanonicalPayload:
         "model": request.model,
         "input": request.prompt,
     }
+    if "style_prompt" in body:
+        payload["prompt"] = body.pop("style_prompt")
     payload.setdefault("response_format", "mp3")
     payload.setdefault("speed", 1.0)
     payload.update(body)
@@ -310,6 +322,29 @@ def build_transcribe(request: MediaRequest) -> CanonicalPayload:
     if "language" in body:
         payload["language"] = str(body["language"])
     return _wrap(request, "audio.transcribe", "/audio/transcriptions", payload)
+
+
+def build_video_transcribe(request: MediaRequest) -> CanonicalPayload:
+    """``POST /video/transcriptions`` - canonical provider body."""
+    if request.inputs.get("url") is None:
+        raise ValueError("video.transcribe requires inputs.url")
+    allowed = allowed_parameter_names("video.transcribe")
+    body = _copy_only(request.parameters, allowed)
+    payload: dict[str, Any] = {"url": str(request.inputs["url"])}
+    payload["response_format"] = str(body.get("response_format", "json"))
+    return _wrap(request, "video.transcribe", "/video/transcriptions", payload)
+
+
+def build_voice_clone(request: MediaRequest) -> CanonicalPayload:
+    """``POST /audio/voices`` - canonical multipart metadata.
+
+    The audio sample file is supplied separately by the runner; only the
+    structured fields and their hash are encoded in :class:`CanonicalPayload`.
+    """
+    if request.model is None:
+        raise ValueError("audio.voice_clone requires model")
+    payload: dict[str, Any] = {"model": request.model}
+    return _wrap(request, "audio.voice_clone", "/audio/voices", payload)
 
 
 def build_video_queue(request: MediaRequest) -> CanonicalPayload:
@@ -349,6 +384,12 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
             payload["elements"] = elements
         else:
             raise ValueError("inputs.elements must be a list when provided.")
+    if "keyframes" in request.inputs:
+        keyframes = request.inputs["keyframes"]
+        if isinstance(keyframes, list):
+            payload["keyframes"] = _build_keyframes(keyframes)
+        else:
+            raise ValueError("inputs.keyframes must be a list when provided.")
     return _wrap(request, "video.generate", "/video/queue", payload)
 
 
@@ -496,6 +537,43 @@ def _strict_bool_string(value: Any) -> str:
     if isinstance(value, str) and value in {"true", "false"}:
         return value
     raise ValueError("parameters.timestamps must be a boolean or the literal 'true'/'false'.")
+
+
+def _build_style_references(value: Any) -> list[dict[str, Any]]:
+    """Normalize image.generate style_references into provider wire shape."""
+    if not isinstance(value, list):
+        raise ValueError("inputs.style_references must be a list")
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ValueError("inputs.style_references items must be objects")
+        image = item.get("image")
+        if not isinstance(image, str) or not image:
+            raise ValueError("inputs.style_references.image must be a non-empty string")
+        entry: dict[str, Any] = {"image": normalize_media_input(image)}
+        strength = item.get("strength")
+        if strength is not None:
+            entry["strength"] = float(strength)
+        result.append(entry)
+    return result
+
+
+def _build_keyframes(value: Any) -> list[dict[str, Any]]:
+    """Normalize video.generate keyframes into provider wire shape."""
+    if not isinstance(value, list):
+        raise ValueError("inputs.keyframes must be a list")
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ValueError("inputs.keyframes items must be objects")
+        image = item.get("image")
+        frame_index = item.get("frame_index")
+        if not isinstance(image, str) or not image:
+            raise ValueError("inputs.keyframes.image must be a non-empty string")
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int):
+            raise ValueError("inputs.keyframes.frame_index must be an integer")
+        result.append({"image_url": normalize_media_input(image), "frame_index": frame_index})
+    return result
 
 
 def dump(payload: CanonicalPayload) -> str:

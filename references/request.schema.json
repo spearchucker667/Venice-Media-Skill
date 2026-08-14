@@ -16,6 +16,9 @@
           "language_code": {
             "type": "string"
           },
+          "loop": {
+            "type": "boolean"
+          },
           "lyrics_optimizer": {
             "type": "boolean"
           },
@@ -63,6 +66,9 @@
       "audio.tts": {
         "additionalProperties": false,
         "properties": {
+          "language": {
+            "type": "string"
+          },
           "response_format": {
             "type": "string"
           },
@@ -71,10 +77,28 @@
             "minimum": 0.25,
             "type": "number"
           },
+          "style_prompt": {
+            "type": "string"
+          },
+          "temperature": {
+            "maximum": 2,
+            "minimum": 0,
+            "type": "number"
+          },
+          "top_p": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
           "voice": {
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "audio.voice_clone": {
+        "additionalProperties": false,
+        "properties": {},
         "type": "object"
       },
       "image.background_remove": {
@@ -87,6 +111,12 @@
         "properties": {
           "aspect_ratio": {
             "type": "string"
+          },
+          "disable_prompt_optimization_thinking": {
+            "type": "boolean"
+          },
+          "enhance_prompt": {
+            "type": "boolean"
           },
           "output_format": {
             "type": "string"
@@ -115,6 +145,9 @@
             "type": "boolean"
           },
           "enable_web_search": {
+            "type": "boolean"
+          },
+          "enhance_prompt": {
             "type": "boolean"
           },
           "format": {
@@ -169,6 +202,12 @@
         "properties": {
           "aspect_ratio": {
             "type": "string"
+          },
+          "disable_prompt_optimization_thinking": {
+            "type": "boolean"
+          },
+          "enhance_prompt": {
+            "type": "boolean"
           },
           "output_format": {
             "type": "string"
@@ -247,6 +286,15 @@
           "queue_id"
         ],
         "type": "object"
+      },
+      "video.transcribe": {
+        "additionalProperties": false,
+        "properties": {
+          "response_format": {
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     }
   },
@@ -291,6 +339,9 @@
               },
               "language_code": {
                 "type": "string"
+              },
+              "loop": {
+                "type": "boolean"
               },
               "lyrics_optimizer": {
                 "type": "boolean"
@@ -452,12 +503,28 @@
           "parameters": {
             "additionalProperties": false,
             "properties": {
+              "language": {
+                "type": "string"
+              },
               "response_format": {
                 "type": "string"
               },
               "speed": {
                 "maximum": 4,
                 "minimum": 0.25,
+                "type": "number"
+              },
+              "style_prompt": {
+                "type": "string"
+              },
+              "temperature": {
+                "maximum": 2,
+                "minimum": 0,
+                "type": "number"
+              },
+              "top_p": {
+                "maximum": 1,
+                "minimum": 0,
                 "type": "number"
               },
               "voice": {
@@ -475,6 +542,54 @@
           "operation",
           "model",
           "prompt"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "audio.voice_clone"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "audio"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {},
+            "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "model"
         ],
         "type": "object"
       }
@@ -563,6 +678,12 @@
               "aspect_ratio": {
                 "type": "string"
               },
+              "disable_prompt_optimization_thinking": {
+                "type": "boolean"
+              },
+              "enhance_prompt": {
+                "type": "boolean"
+              },
               "output_format": {
                 "type": "string"
               },
@@ -601,7 +722,30 @@
         "properties": {
           "inputs": {
             "additionalProperties": false,
-            "properties": {},
+            "properties": {
+              "style_references": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "image": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "strength": {
+                      "maximum": 1,
+                      "minimum": 0.1,
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "image"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
             "type": "object"
           },
           "model": {
@@ -626,6 +770,9 @@
                 "type": "boolean"
               },
               "enable_web_search": {
+                "type": "boolean"
+              },
+              "enhance_prompt": {
                 "type": "boolean"
               },
               "format": {
@@ -729,6 +876,12 @@
             "properties": {
               "aspect_ratio": {
                 "type": "string"
+              },
+              "disable_prompt_optimization_thinking": {
+                "type": "boolean"
+              },
+              "enhance_prompt": {
+                "type": "boolean"
               },
               "output_format": {
                 "type": "string"
@@ -851,12 +1004,35 @@
                 "minLength": 1,
                 "type": "string"
               },
+              "keyframes": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "frame_index": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "image": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "image",
+                    "frame_index"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10,
+                "minItems": 1,
+                "type": "array"
+              },
               "reference_audios": {
                 "items": {
                   "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 3,
+                "maxItems": 10,
                 "minItems": 1,
                 "type": "array"
               },
@@ -865,7 +1041,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 9,
+                "maxItems": 30,
                 "minItems": 1,
                 "type": "array"
               },
@@ -874,7 +1050,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 3,
+                "maxItems": 10,
                 "minItems": 1,
                 "type": "array"
               },
@@ -883,6 +1059,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
+                "maxItems": 4,
                 "minItems": 1,
                 "type": "array"
               },
@@ -991,6 +1168,57 @@
         ],
         "type": "object"
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "video.transcribe"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "response_format": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      }
     }
   ],
   "properties": {
@@ -1059,13 +1287,15 @@
         "audio.retrieve",
         "audio.transcribe",
         "audio.tts",
+        "audio.voice_clone",
         "image.background_remove",
         "image.edit",
         "image.generate",
         "image.multi_edit",
         "image.upscale",
         "video.generate",
-        "video.retrieve"
+        "video.retrieve",
+        "video.transcribe"
       ],
       "type": "string"
     },

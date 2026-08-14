@@ -21,10 +21,12 @@ SUPPORTED_OPERATIONS: Final[frozenset[str]] = frozenset(
         "image.background_remove",
         "video.generate",
         "video.retrieve",
+        "video.transcribe",
         "audio.tts",
         "audio.generate",
         "audio.retrieve",
         "audio.transcribe",
+        "audio.voice_clone",
     }
 )
 
@@ -53,6 +55,7 @@ MODELLESS_OPERATIONS: Final[frozenset[str]] = frozenset(
         "image.background_remove",
         "video.retrieve",
         "audio.retrieve",
+        "video.transcribe",
     }
 )
 
@@ -60,7 +63,7 @@ MODELLESS_OPERATIONS: Final[frozenset[str]] = frozenset(
 # ``inputs.*`` keys for that operation. Any key outside this set is rejected
 # at parse time. An empty set means the operation accepts no inputs.
 _PER_OPERATION_INPUTS: dict[str, set[str]] = {
-    "image.generate": set(),
+    "image.generate": {"style_references"},
     "image.edit": {"image"},
     "image.multi_edit": {"images"},
     "image.upscale": {"image"},
@@ -75,12 +78,15 @@ _PER_OPERATION_INPUTS: dict[str, set[str]] = {
         "reference_audios",
         "scene_images",
         "elements",
+        "keyframes",
     },
     "video.retrieve": set(),
+    "video.transcribe": {"url"},
     "audio.tts": set(),
     "audio.generate": set(),
     "audio.retrieve": set(),
     "audio.transcribe": {"audio"},
+    "audio.voice_clone": {"audio"},
 }
 
 # Inputs that are required per operation (must be present and non-empty).
@@ -89,7 +95,9 @@ _REQUIRED_INPUTS: dict[str, set[str]] = {
     "image.multi_edit": {"images"},
     "image.upscale": {"image"},
     "image.background_remove": {"image"},
+    "video.transcribe": {"url"},
     "audio.transcribe": {"audio"},
+    "audio.voice_clone": {"audio"},
 }
 
 # Inputs that must be a list (not a scalar) per operation.
@@ -101,6 +109,7 @@ _LIST_INPUTS: dict[str, set[str]] = {
         "reference_audios",
         "scene_images",
         "elements",
+        "keyframes",
     },
 }
 
@@ -280,6 +289,10 @@ class MediaRequest:
                 "execution.skip_quote is unsupported; paid queued generation always requires "
                 "an explicit hash-bound quote approval."
             )
+        if self.operation == "video.generate":
+            _validate_video_inputs(self.inputs, self.parameters.get("duration"))
+        if self.operation == "image.generate":
+            _validate_style_references(self.inputs.get("style_references"))
 
     # ------------------------------------------------------------------
     # serialization
@@ -356,6 +369,8 @@ def request_json_schema() -> dict[str, Any]:
             "creativity": {"minimum": 0, "maximum": 0.02},
             "cfg_scale": {"exclusiveMinimum": 0, "maximum": 20},
             "speed": {"minimum": 0.25, "maximum": 4},
+            "temperature": {"minimum": 0, "maximum": 2},
+            "top_p": {"minimum": 0, "maximum": 1},
             "reference_video_total_duration": {"minimum": 0},
         }
         for key, constraints in numeric_constraints.items():
@@ -378,7 +393,13 @@ def request_json_schema() -> dict[str, Any]:
 
     def _input_property(key: str) -> dict[str, Any]:
         if key in {"images", "reference_images", "reference_videos", "reference_audios", "scene_images"}:
-            maximum = {"images": 3, "reference_images": 9, "reference_videos": 3, "reference_audios": 3}.get(key)
+            maximum = {
+                "images": 3,
+                "reference_images": 30,
+                "reference_videos": 10,
+                "reference_audios": 10,
+                "scene_images": 4,
+            }.get(key)
             schema: dict[str, Any] = {
                 "type": "array",
                 "minItems": 1,
@@ -389,6 +410,35 @@ def request_json_schema() -> dict[str, Any]:
             return schema
         if key == "elements":
             return {"type": "array", "minItems": 1, "items": {"type": "object"}}
+        if key == "keyframes":
+            return {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "image": {"type": "string", "minLength": 1},
+                        "frame_index": {"type": "integer", "minimum": 0},
+                    },
+                    "required": ["image", "frame_index"],
+                },
+            }
+        if key == "style_references":
+            return {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "image": {"type": "string", "minLength": 1},
+                        "strength": {"type": "number", "minimum": 0.1, "maximum": 1},
+                    },
+                    "required": ["image"],
+                },
+            }
         return {"type": "string", "minLength": 1}
 
     branches: list[dict[str, Any]] = []
@@ -606,6 +656,8 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
                 raise PayloadValidationError(f"inputs.{key} must be a list for {operation}.")
             if operation == "image.multi_edit" and not all(isinstance(item, str) for item in inputs[key]):
                 raise PayloadValidationError(f"inputs.{key} must be a list of strings for {operation}.")
+            if key in {"keyframes", "style_references"} and not all(isinstance(item, Mapping) for item in inputs[key]):
+                raise PayloadValidationError(f"inputs.{key} must be a list of objects for {operation}.")
 
 
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {
@@ -631,17 +683,24 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
             "embed_exif_metadata",
             "enable_web_search",
             "disable_prompt_optimization_thinking",
+            "enhance_prompt",
         },
     },
     "image.edit": {
         "strings": {"output_format", "aspect_ratio", "resolution"},
         "integers": set(),
-        "booleans": set(),
+        "booleans": {
+            "enhance_prompt",
+            "disable_prompt_optimization_thinking",
+        },
     },
     "image.multi_edit": {
         "strings": {"output_format", "aspect_ratio", "resolution", "quality"},
         "integers": set(),
-        "booleans": set(),
+        "booleans": {
+            "enhance_prompt",
+            "disable_prompt_optimization_thinking",
+        },
     },
     "image.upscale": {
         "strings": set(),
@@ -663,12 +722,12 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     "audio.generate": {
         "strings": {"lyrics_prompt", "voice", "language_code"},
         "integers": {"duration_seconds", "character_count"},
-        "booleans": {"force_instrumental", "lyrics_optimizer"},
+        "booleans": {"force_instrumental", "lyrics_optimizer", "loop"},
         "numbers": {"speed"},
     },
     "audio.tts": {
-        "strings": {"voice", "response_format"},
-        "numbers": {"speed"},
+        "strings": {"voice", "response_format", "language", "style_prompt"},
+        "numbers": {"speed", "temperature", "top_p"},
     },
     "audio.transcribe": {
         "strings": {"response_format", "language"},
@@ -676,6 +735,8 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     },
     "video.retrieve": {"strings": set(), "integers": set()},
     "audio.retrieve": {"strings": set(), "integers": set()},
+    "video.transcribe": {"strings": {"response_format"}, "integers": set(), "booleans": set()},
+    "audio.voice_clone": {"strings": set(), "integers": set(), "booleans": set()},
 }
 
 
@@ -740,5 +801,85 @@ def _validate_parameters(request: MediaRequest) -> None:
             raise PayloadValidationError("parameters.cfg_scale must be in (0, 20].")
         if key == "speed" and not 0.25 <= float(value) <= 4:
             raise PayloadValidationError("parameters.speed must be in [0.25, 4].")
+        if key == "temperature" and not 0 <= float(value) <= 2:
+            raise PayloadValidationError("parameters.temperature must be in [0, 2].")
+        if key == "top_p" and not 0 <= float(value) <= 1:
+            raise PayloadValidationError("parameters.top_p must be in [0, 1].")
         if key == "reference_video_total_duration" and float(value) < 0:
             raise PayloadValidationError("parameters.reference_video_total_duration must be non-negative.")
+
+
+def _validate_video_inputs(inputs: Mapping[str, Any], duration: Any) -> None:
+    """Validate video.generate media inputs against current provider limits."""
+    limits = {
+        "reference_images": 30,
+        "reference_videos": 10,
+        "reference_audios": 10,
+        "scene_images": 4,
+        "elements": 4,
+        "keyframes": 10,
+    }
+    for key, maximum in limits.items():
+        value = inputs.get(key)
+        if isinstance(value, list) and len(value) > maximum:
+            raise PayloadValidationError(f"inputs.{key} accepts at most {maximum} item(s) for video.generate.")
+    keyframes = inputs.get("keyframes")
+    if isinstance(keyframes, list):
+        indexes: list[int] = []
+        for item in keyframes:
+            if not isinstance(item, Mapping):
+                continue
+            frame_index = item.get("frame_index")
+            if not isinstance(frame_index, int) or isinstance(frame_index, bool):
+                raise PayloadValidationError("inputs.keyframes.frame_index must be an integer.")
+            if frame_index < 0:
+                raise PayloadValidationError("inputs.keyframes.frame_index must be non-negative.")
+            indexes.append(frame_index)
+        if len(indexes) != len(set(indexes)):
+            raise PayloadValidationError("inputs.keyframes.frame_index values must be unique.")
+        max_index = _max_keyframe_index_for_duration(duration)
+        if max_index is not None and indexes and max(indexes) > max_index:
+            raise PayloadValidationError(f"inputs.keyframes.frame_index must not exceed duration * 24 ({max_index}).")
+
+
+def _max_keyframe_index_for_duration(duration: Any) -> int | None:
+    """Return the maximum allowed frame index when duration is deterministically known.
+
+    The provider documents keyframes as pinned to a 24 fps video, so the maximum
+    frame index is ``duration_seconds * 24``. Source-matched durations (``-1``,
+    ``auto``) and the literal ``1 gen`` token cannot be resolved locally.
+    """
+    if not isinstance(duration, str):
+        return None
+    duration = duration.strip().lower()
+    if duration in {"-1", "auto", "1 gen"}:
+        return None
+    if duration.endswith("s"):
+        try:
+            seconds = int(duration[:-1])
+            if seconds > 0:
+                return seconds * 24
+        except ValueError:
+            pass
+    return None
+
+
+def _validate_style_references(value: Any) -> None:
+    """Validate image.generate style reference input."""
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise PayloadValidationError("inputs.style_references must be a list.")
+    if not value:
+        raise PayloadValidationError("inputs.style_references must be non-empty when provided.")
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise PayloadValidationError("inputs.style_references items must be objects.")
+        if "image" not in item or not isinstance(item.get("image"), str) or not item.get("image"):
+            raise PayloadValidationError("inputs.style_references.image must be a non-empty string.")
+        strength = item.get("strength")
+        if strength is not None:
+            if isinstance(strength, bool) or not isinstance(strength, (int, float)):
+                raise PayloadValidationError("inputs.style_references.strength must be a number.")
+            if not 0.1 <= float(strength) <= 1:
+                raise PayloadValidationError("inputs.style_references.strength must be in [0.1, 1].")

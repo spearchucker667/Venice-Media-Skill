@@ -1,0 +1,125 @@
+name: API drift detection
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on Sundays at 05:17 UTC (off-peak, avoids the :00/:30 herd).
+    - cron: "17 5 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  detect-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        # actions/checkout@v6 — pinned to immutable SHA.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        # actions/setup-python@v6 — pinned to immutable SHA.
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Fetch upstream Venice API docs
+        id: upstream
+        run: |
+          UPSTREAM_DIR="$(mktemp -d)"
+          git clone --depth=1 --filter=blob:none https://github.com/veniceai/api-docs "$UPSTREAM_DIR/api-docs"
+          UPSTREAM_SHA="$(git -C "$UPSTREAM_DIR/api-docs" rev-parse HEAD)"
+          UPSTREAM_VERSION="$(python -c "import yaml; print(yaml.safe_load(open('$UPSTREAM_DIR/api-docs/swagger.yaml'))['info']['version'])")"
+          echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "dir=$UPSTREAM_DIR/api-docs" >> "$GITHUB_OUTPUT"
+          echo "Upstream SHA: $UPSTREAM_SHA"
+          echo "Upstream OpenAPI version: $UPSTREAM_VERSION"
+
+      - name: Compare OpenAPI provenance
+        id: compare
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          import yaml
+          from pathlib import Path
+
+          tracked_path = Path('references/venice-openapi.yaml')
+          upstream_path = Path('${{ steps.upstream.outputs.dir }}') / 'swagger.yaml'
+
+          tracked = yaml.safe_load(tracked_path.read_text(encoding='utf-8'))
+          upstream = yaml.safe_load(upstream_path.read_text(encoding='utf-8'))
+
+          drift: list[str] = []
+
+          tracked_version = tracked.get('info', {}).get('version')
+          upstream_version = upstream.get('info', {}).get('version')
+          if tracked_version != upstream_version:
+              drift.append(f"info.version changed: {tracked_version!r} -> {upstream_version!r}")
+
+          tracked_sha = (tracked.get('x-venice-media-skill-provenance') or {}).get('upstream_commit')
+          upstream_sha = '${{ steps.upstream.outputs.sha }}'
+          if tracked_sha != upstream_sha:
+              drift.append(f"upstream commit changed: {tracked_sha!r} -> {upstream_sha!r}")
+
+          # Compare media request schemas that the bridge depends on.
+          tracked_schemas = tracked.get('components', {}).get('schemas', {})
+          upstream_schemas = upstream.get('components', {}).get('schemas', {})
+          schema_names = [
+              'GenerateImageRequest',
+              'EditImageRequest',
+              'MultiEditImageRequest',
+              'QueueVideoRequest',
+              'QuoteVideoRequest',
+              'CreateSpeechRequestSchema',
+              'QueueAudioRequest',
+              'CreateClonedVoiceRequestSchema',
+              'CreateVideoTranscriptionRequestSchema',
+          ]
+          for name in schema_names:
+              ts = tracked_schemas.get(name)
+              us = upstream_schemas.get(name)
+              if us is None:
+                  drift.append(f"upstream schema {name!r} removed")
+                  continue
+              if ts is None:
+                  drift.append(f"tracked schema {name!r} missing (upstream has it)")
+                  continue
+              if ts != us:
+                  drift.append(f"schema {name!r} differs")
+
+          report_path = Path('api-drift-report.json')
+          report = {
+              "drift_detected": bool(drift),
+              "tracked_version": tracked_version,
+              "upstream_version": upstream_version,
+              "tracked_sha": tracked_sha,
+              "upstream_sha": upstream_sha,
+              "drift_items": drift,
+          }
+          report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+          if drift:
+              print("API drift detected:")
+              for item in drift:
+                  print(f"  - {item}")
+              sys.exit(1)
+          print("No API drift detected.")
+          PY
+
+      - name: Upload drift report
+        if: always()
+        # actions/upload-artifact@v4 — pinned to immutable SHA.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-drift-report
+          path: api-drift-report.json
+          retention-days: 30

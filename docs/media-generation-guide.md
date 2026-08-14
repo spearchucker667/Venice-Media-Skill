@@ -11,7 +11,9 @@ Use `image.generate` with the native `/image/generate` endpoint. The bridge defa
 | Omitted or `1` | Binary | `return_binary=true`; `variants` omitted |
 | `2`–`4` | JSON | `return_binary=false`; `variants=<count>` |
 
-`return_binary` is an internal transport decision and is rejected in user parameters. Existing manifests containing `variants: 1` remain valid; the logical count is preserved while the optional field is omitted from the wire request. JSON-mode responses use the native `images` array of raw-base64 values. The writer validates and decodes every image before atomically publishing any artifact, preserves response order, and records one-based `variant_index`/`variant_count` metadata.
+`return_binary` is an internal transport decision and is rejected in user parameters. JSON-mode responses use the native `images` array of raw-base64 values. The writer validates and decodes every image before atomically publishing any artifact, preserves response order, and records one-based `variant_index`/`variant_count` metadata.
+
+Newer supported controls include `enhance_prompt` and `style_references`. `style_references` is structured media data; the bridge validates array bounds and normalizes each reference the same way it normalizes image inputs.
 
 Sizing is model-specific:
 
@@ -20,15 +22,7 @@ Sizing is model-specific:
 - Resolution-tier models use `resolution`, often with `aspect_ratio`.
 - Quality-aware models may accept `quality`.
 
-Prompt structure:
-
-```text
-Primary subject + action/pose + environment + composition + camera/lens + lighting + material/style + color language + quality constraints
-```
-
-Keep negative prompts concrete. Avoid repeating the positive prompt as a negative. Use seeds for reproducibility, not quality guarantees.
-
-Prompts are passed through verbatim. The bridge does not rewrite an adult age, add sexual details, silently substitute a model ID, or infer a different subject. Model availability, type, offline state, pricing, and constraints come from the exact live catalog entry.
+Prompts are passed through verbatim. Model availability, type, offline state, pricing, and constraints come from the exact live catalog entry.
 
 ## Image editing
 
@@ -36,6 +30,8 @@ Use:
 
 - `image.edit` for one base image
 - `image.multi_edit` for 1–3 images, with the first as the base and remaining images as references/layers
+
+Additional supported controls include `enhance_prompt` and `disable_prompt_optimization_thinking`. The bridge still controls `safe_mode` and injects it for supported models.
 
 Editing prompts should identify what changes and what remains invariant:
 
@@ -61,14 +57,22 @@ The bridge normalizes at the endpoint boundary; do not manually rewrite media un
 | Background removal | Local path, data URL, or URL | `image` for inline data URL or `image_url` for URL |
 | Image upscale | Local path, data URL, or raw base64 | Validated raw base64 without a data-URL prefix |
 | Image/reference-to-video | Local path, data URL, or URL | Typed URL field; local files become data URLs |
-| TTS / generated audio | Text prompt and typed parameters | JSON; no local media input in the current bridge contract |
+| TTS / generated audio | Text prompt and typed parameters | JSON; no local media input |
 | Transcription | Local audio path | Multipart file upload |
-
-Voice cloning is not a distinct supported bridge operation. Do not invent a manifest shape for it; verify a future provider schema and add a typed operation before use.
+| Voice clone | Local audio sample + name + description + optional labels | Multipart form data |
 
 ## Video generation
 
 Video uses an asynchronous queue. Required fields are model, prompt, and duration. Aspect ratio, resolution, audio, and input media depend on live model constraints.
+
+Current provider limits supported by the bridge:
+
+- `reference_image_urls`: up to 30
+- `reference_video_urls`: up to 10
+- `reference_audio_urls`: up to 10
+- `keyframes`: up to 10 entries, each with `image_url` and a non-negative integer `frame_index`
+
+The bridge validates no duplicate frame indexes and, when duration is deterministically known, that no keyframe exceeds the last frame.
 
 Prompt structure:
 
@@ -122,14 +126,14 @@ Use canonical case-sensitive reference tokens with one space before the number. 
 
 Use `audio.tts`. Required input is text; model-specific voice compatibility is loaded from `/models` where available.
 
-Potential controls include:
+Controls include:
 
-- Voice
-- Response format
-- Speed
-- Language hint
-- Delivery/style prompt
-- Temperature/top-p for models that advertise support
+- `voice`
+- `response_format`
+- `speed`
+- `language`
+- `temperature` and `top_p` for models that advertise support
+- `style_prompt` — mapped to the provider field `prompt` so it does not conflict with the top-level manifest `prompt`
 
 The bridge disables streaming because the host-agent contract expects one completed artifact path.
 
@@ -143,9 +147,25 @@ Use `audio.generate`. The supported fields vary by model and can include:
 - Voice
 - Language code
 - Speed
+- Loop toggle
 
 Quote first, then queue. Preserve the queue ID.
 
 ## Transcription
 
 Use `audio.transcribe` with an explicit local audio file. The bridge sends multipart form data. JSON or text output is written locally with a metadata sidecar.
+
+## Voice cloning
+
+Use `audio.voice_clone` with a local audio sample. The bridge sends multipart form data with:
+
+- `name` (required)
+- `audio_file` (required, from the local path)
+- `description` (optional)
+- `labels` (optional array of strings)
+
+The provider returns a voice object; the bridge writes it as a JSON artifact with a metadata sidecar.
+
+## Video transcription
+
+Use `video.transcribe` with a local video file. The bridge sends multipart form data. JSON or text output is written locally with a metadata sidecar.

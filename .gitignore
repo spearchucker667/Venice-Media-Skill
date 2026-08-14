@@ -88,4 +88,5 @@ Thumbs.db
 # Local audit evidence and generated reports
 /docs/audits/*
 !/docs/audits/Venice_Media_Skill_Remediation_2026-07-18.md
+!/docs/audits/security-post-mortem-july-2026.md
 /.audit-evidence/
