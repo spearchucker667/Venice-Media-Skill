@@ -17,7 +17,7 @@ Evidence was collected on 2026-08-14. See [v1.3.1 external acceptance](audits/v1
 | OpenCode 1.18.15 | VERIFIED | VERIFIED | VERIFIED | NOT TESTED | `opencode run --auto` loaded the project skill and ran offline `--version` and `doctor` commands successfully. |
 | Kimi Code CLI 0.36.0 (`kimi`) | VERIFIED | VERIFIED | VERIFIED | NOT TESTED | A prompt-mode session loaded `.kimi-code/skills/venice-media/SKILL.md` and ran offline `--version` and `doctor` commands successfully. |
 | macOS 27.0 arm64 | VERIFIED | n/a | VERIFIED | VERIFIED | Downloaded wheel/sdist, generic/Kimi installs, host runtimes, Keychain auth, model discovery, planning, and 11-operation dry-run matrix exercised. |
-| Linux | PARTIAL | n/a | PARTIAL | NOT TESTED | Checkout-built Linux CI was green at baseline. Published-release Linux smoke is added for the v1.3.2 release cycle. |
-| Windows | PARTIAL | n/a | PARTIAL | NOT TESTED | Existing checkout-built smoke was green. Native PowerShell installer regression coverage and published-release Windows smoke are added for hosted execution before v1.3.2 publication. |
+| Linux | VERIFIED | n/a | VERIFIED | NOT TESTED | Published-release run `31849635295` verified the downloaded v1.3.1 wheel, sdist, checksums, bundled resources, and generic project installation on Ubuntu. |
+| Windows | VERIFIED | n/a | VERIFIED | NOT TESTED | CI run `31849875746` verified the hardened native installer and uninstall safety contract. Published-release run `31849635295` verified the v1.3.1 wheel/sdist smoke, then FAILED at the expected unsafe native-installer case; that defect is fixed for v1.3.2. |
 
 No charged Venice generation was executed. Live API status means authenticated connectivity and model discovery only.
