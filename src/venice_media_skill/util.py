@@ -77,16 +77,27 @@ _REDACT_HEADERS = frozenset({"authorization", "api_key", "token", "venice_api_ke
 _REDACT_MEDIA_FIELDS = frozenset(
     {
         "audio",
+        "audio_url",
+        "elements",
         "end_image",
+        "end_image_url",
         "image",
+        "image_url",
         "images",
         "input_audio",
         "input_image",
+        "keyframes",
+        "reference_audio_urls",
         "reference_audios",
+        "reference_image_urls",
         "reference_images",
+        "reference_video_urls",
         "reference_videos",
+        "scene_image_urls",
         "scene_images",
+        "style_references",
         "video",
+        "video_url",
     }
 )
 
@@ -95,9 +106,10 @@ def redact_data(value: object) -> object:
     if isinstance(value, dict):
         output: dict[str, object] = {}
         for key, item in value.items():
-            if key.lower() in _REDACT_HEADERS:
+            key_lower = key.lower()
+            if key_lower in _REDACT_HEADERS:
                 output[key] = "[REDACTED]"
-            elif key.lower() in _REDACT_MEDIA_FIELDS and _contains_inline_media(item):
+            elif key_lower in _REDACT_MEDIA_FIELDS and _contains_inline_media(item):
                 output[key] = "[REDACTED_MEDIA]"
             else:
                 output[key] = redact_data(item)
@@ -105,6 +117,10 @@ def redact_data(value: object) -> object:
     if isinstance(value, list):
         return [redact_data(item) for item in value]
     if isinstance(value, str):
+        # A data URL carries inline media regardless of the field name it
+        # appears under; never echo it into diagnostics.
+        if value.startswith("data:"):
+            return "[REDACTED_MEDIA]"
         return redact_text(value)
     return value
 

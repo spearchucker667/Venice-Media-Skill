@@ -425,3 +425,86 @@ class TestReleaseMetadata:
 
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         assert pyproject["project"]["version"] == package_version
+
+
+class TestStaticEnums:
+    """Globally fixed provider enumerations are enforced locally before any API call."""
+
+    @pytest.mark.parametrize(
+        ("operation", "extra"),
+        [
+            ("audio.tts", {"prompt": "hello", "model": "tts-model"}),
+            ("audio.transcribe", {"model": "asr-model", "inputs": {"audio": "x.wav"}}),
+            ("video.transcribe", {"inputs": {"url": "https://www.youtube.com/watch?v=x"}}),
+        ],
+    )
+    def test_response_format_enum_rejected(self, operation: str, extra: dict) -> None:
+        manifest: dict[str, object] = {
+            "operation": operation,
+            "parameters": {"response_format": "yaml"},
+            **extra,
+        }
+        with pytest.raises(Exception, match="response_format"):
+            MediaRequest.from_mapping(manifest)
+
+    @pytest.mark.parametrize(
+        ("operation", "extra", "value"),
+        [
+            ("audio.tts", {"prompt": "hello", "model": "tts-model"}, "flac"),
+            ("audio.transcribe", {"model": "asr-model", "inputs": {"audio": "x.wav"}}, "text"),
+            ("video.transcribe", {"inputs": {"url": "https://www.youtube.com/watch?v=x"}}, "text"),
+        ],
+    )
+    def test_response_format_enum_accepted(self, operation: str, extra: dict, value: str) -> None:
+        manifest: dict[str, object] = {
+            "operation": operation,
+            "parameters": {"response_format": value},
+            **extra,
+        }
+        MediaRequest.from_mapping(manifest)
+
+    def test_schema_enforces_same_enums(self, request_schema: dict) -> None:
+        expectations = {
+            "audio.tts": {"mp3", "opus", "aac", "flac", "wav", "pcm"},
+            "audio.transcribe": {"json", "text"},
+            "video.transcribe": {"json", "text"},
+        }
+        shapes = request_schema["$defs"]["parameterShapes"]
+        for op, allowed in expectations.items():
+            enum = set(shapes[op]["properties"]["response_format"]["enum"])
+            assert enum == allowed, op
+
+
+class TestQuoteQueueCanonicalization:
+    """The quote builder must not rebuild (and re-read local media for) the queue body."""
+
+    def test_video_quote_reuses_supplied_queue_canonical(self, tmp_path: Path) -> None:
+        import base64
+
+        image = tmp_path / "frame.png"
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\rIDATx\x9cc\xfa\xff\xff?\x03\x00\x05\xfe\x02\xfe\xa3\x9a\xfa\x05"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        image.write_bytes(png)
+        request = MediaRequest.from_mapping(
+            {
+                "operation": "video.generate",
+                "model": "video-model",
+                "prompt": "p",
+                "parameters": {"duration": "5s"},
+                "inputs": {"image": str(image)},
+            }
+        )
+        queue = build_video_queue(request)
+        encoded = base64.b64encode(png).decode("ascii")
+        # Remove the local file after the queue build; if the quote builder
+        # re-normalized inputs this second build would fail or diverge.
+        image.unlink()
+        quote = build_video_quote(request, queue)
+        assert quote.hash == queue.hash
+        assert "image_url" in queue.payload
+        assert encoded in str(queue.payload["image_url"])
+        assert "image_url" not in quote.payload  # reference media is queue-only

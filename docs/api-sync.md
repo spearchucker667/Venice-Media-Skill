@@ -21,20 +21,19 @@ git -C "$UPSTREAM_DIR/api-docs" log -1 --date=iso-strict --format='%H%n%ad%n%s'
 ## Refresh the local snapshot
 
 ```bash
-python scripts/sync-venice-api-docs.py \
-  --upstream "$UPSTREAM_DIR/api-docs" \
-  [--pin <exact-upstream-sha>]
+python scripts/sync-venice-api-docs.py "$UPSTREAM_DIR/api-docs" [--sha <exact-upstream-sha>]
 ```
 
 The script:
 
 1. Reads `swagger.yaml` from the upstream checkout.
-2. Verifies the upstream SHA matches `--pin` when provided.
+2. Verifies the upstream SHA matches `--sha` when provided.
 3. Records upstream provenance in the snapshot.
 4. Writes `references/venice-openapi.yaml`.
 5. Mirrors the updated references into all Skill trees.
 6. Regenerates `references/request.schema.json` from runtime code.
-7. Verifies idempotency by refusing to change output on a second run.
+7. Verifies idempotency: re-running against the same upstream SHA preserves
+   the recorded `retrieved_utc` and produces byte-identical output.
 
 After running it:
 

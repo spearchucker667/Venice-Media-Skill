@@ -47,6 +47,7 @@ jobs:
         id: compare
         run: |
           python - <<'PY'
+          import importlib.util
           import json
           import sys
           import yaml
@@ -55,22 +56,33 @@ jobs:
           tracked_path = Path('references/venice-openapi.yaml')
           upstream_path = Path('${{ steps.upstream.outputs.dir }}') / 'swagger.yaml'
 
-          tracked = yaml.safe_load(tracked_path.read_text(encoding='utf-8'))
-          upstream = yaml.safe_load(upstream_path.read_text(encoding='utf-8'))
+          # Normalize the upstream file through the same deterministic
+          # correction the sync script applies, so schema comparison is
+          # semantic rather than YAML-formatting sensitive.
+          spec = importlib.util.spec_from_file_location('sync', 'scripts/sync-venice-api-docs.py')
+          sync = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(sync)
 
+          tracked = yaml.safe_load(tracked_path.read_text(encoding='utf-8'))
+          upstream = sync._coerce_string_schema_bools(
+              yaml.safe_load(upstream_path.read_text(encoding='utf-8'))
+          )
+
+          informational: list[str] = []
           drift: list[str] = []
 
           tracked_version = tracked.get('info', {}).get('version')
           upstream_version = upstream.get('info', {}).get('version')
           if tracked_version != upstream_version:
-              drift.append(f"info.version changed: {tracked_version!r} -> {upstream_version!r}")
+              informational.append(f"info.version changed: {tracked_version!r} -> {upstream_version!r}")
 
           tracked_sha = (tracked.get('x-venice-media-skill-provenance') or {}).get('upstream_commit')
           upstream_sha = '${{ steps.upstream.outputs.sha }}'
           if tracked_sha != upstream_sha:
-              drift.append(f"upstream commit changed: {tracked_sha!r} -> {upstream_sha!r}")
+              informational.append(f"upstream HEAD moved: {tracked_sha!r} -> {upstream_sha!r}")
 
           # Compare media request schemas that the bridge depends on.
+          # A difference here is meaningful contract drift and fails the job.
           tracked_schemas = tracked.get('components', {}).get('schemas', {})
           upstream_schemas = upstream.get('components', {}).get('schemas', {})
           schema_names = [
@@ -96,6 +108,32 @@ jobs:
               if ts != us:
                   drift.append(f"schema {name!r} differs")
 
+          # Required endpoints must not disappear.
+          required_paths = [
+              '/image/generate',
+              '/image/edit',
+              '/image/upscale',
+              '/image/background-remove',
+              '/video/queue',
+              '/video/quote',
+              '/video/retrieve',
+              '/video/transcriptions',
+              '/audio/speech',
+              '/audio/queue',
+              '/audio/quote',
+              '/audio/retrieve',
+              '/audio/transcriptions',
+              '/audio/voices',
+              '/models',
+          ]
+          upstream_paths = upstream.get('paths', {})
+          tracked_paths = tracked.get('paths', {})
+          for path in required_paths:
+              if path not in upstream_paths:
+                  drift.append(f"required endpoint {path!r} removed upstream")
+              elif path not in tracked_paths:
+                  drift.append(f"required endpoint {path!r} missing from tracked snapshot")
+
           report_path = Path('api-drift-report.json')
           report = {
               "drift_detected": bool(drift),
@@ -103,16 +141,19 @@ jobs:
               "upstream_version": upstream_version,
               "tracked_sha": tracked_sha,
               "upstream_sha": upstream_sha,
+              "informational": informational,
               "drift_items": drift,
           }
           report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+          for item in informational:
+              print(f"informational: {item}")
           if drift:
-              print("API drift detected:")
+              print("Meaningful API drift detected:")
               for item in drift:
                   print(f"  - {item}")
               sys.exit(1)
-          print("No API drift detected.")
+          print("No meaningful API drift detected.")
           PY
 
       - name: Upload drift report

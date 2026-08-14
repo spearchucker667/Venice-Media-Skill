@@ -266,10 +266,10 @@ class MediaRunner:
     def _queued_generate(self, request: MediaRequest, *, media_type: str) -> dict[str, Any]:
         if media_type == "video":
             queue_canonical = payloads.build_video_queue(request)
-            quote_canonical = payloads.build_video_quote(request)
+            quote_canonical = payloads.build_video_quote(request, queue_canonical)
         else:
             queue_canonical = payloads.build_audio_queue(request)
-            quote_canonical = payloads.build_audio_quote(request)
+            quote_canonical = payloads.build_audio_quote(request, queue_canonical)
 
         # Quote is REQUIRED for paid queued operations. No skip_quote or
         # quote_first=false bypass allowed. The host must explicitly approve
@@ -663,7 +663,7 @@ class MediaRunner:
         directory.mkdir(parents=True, exist_ok=True)
 
         extension = ".json" if response.json_data is not None else ".txt"
-        filename = request.output.filename or f"audio-transcript-{timestamp_slug()}{extension}"
+        filename = request.output.filename or f"{request.operation.replace('.', '-')}-{timestamp_slug()}{extension}"
         if request.output.filename:
             from .output import _validate_safe_filename  # local import
 
@@ -973,69 +973,54 @@ def _sanitize_api_request(operation: str, payload: Mapping[str, Any]) -> dict[st
     """Return a redacted, size-bounded view of the provider payload for audit logs.
 
     Strips inline media bytes (data URLs) and signed URL query strings; the
-    full body is available via the on-disk sidecar metadata JSON.
+    full body is available via the on-disk sidecar metadata JSON. Nested
+    mappings and lists are sanitized recursively so provider-side media keys
+    such as ``image_url`` inside ``keyframes`` or ``style_references`` are
+    also redacted.
     """
     cleaned: dict[str, Any] = {}
     for key, value in payload.items():
-        if operation == "image.upscale" and key == "image" and isinstance(value, str):
-            cleaned[key] = {
-                "kind": "inline_media",
-                "encoding": "raw_base64",
-                "redacted": True,
-            }
-        elif isinstance(value, str) and value.startswith("data:"):
+        cleaned[key] = _sanitize_value(operation, key, value)
+    cleaned["$bridge_operation"] = operation
+    return cleaned
+
+
+def _sanitize_value(operation: str, key: str | None, value: Any) -> Any:
+    if operation == "image.upscale" and key == "image" and isinstance(value, str):
+        return {
+            "kind": "inline_media",
+            "encoding": "raw_base64",
+            "redacted": True,
+        }
+    if isinstance(value, Mapping):
+        return {str(child_key): _sanitize_value(operation, str(child_key), item) for child_key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(operation, None, item) for item in value]
+    if isinstance(value, str):
+        if value.startswith("data:"):
             mime = value[5:].split(";", 1)[0] or "application/octet-stream"
-            cleaned[key] = {
+            return {
                 "kind": "local_media",
                 "mime_type": mime,
                 "redacted": True,
             }
-        elif isinstance(value, str) and value.startswith(("http://", "https://")):
+        if value.startswith(("http://", "https://")):
             try:
                 from urllib.parse import urlparse
 
                 parsed = urlparse(value)
-                cleaned[key] = {
+                return {
                     "host": parsed.hostname,
                     "scheme": parsed.scheme,
                     "path": parsed.path,
                     "redacted_query": True,
                 }
             except ValueError:
-                cleaned[key] = "[unparseable-url]"
-        elif isinstance(value, list):
-            cleaned[key] = [_summarize_list_member(item) for item in value]
-        else:
-            cleaned[key] = value
-    cleaned["$bridge_operation"] = operation
-    return cleaned
-
-
-def _summarize_list_member(item: Any) -> Any:
-    """Apply string-level redaction to a list item while preserving structure."""
-    if isinstance(item, str) and item.startswith("data:"):
-        mime = item[5:].split(";", 1)[0] or "application/octet-stream"
-        return {
-            "kind": "local_media",
-            "mime_type": mime,
-            "redacted": True,
-        }
-    if isinstance(item, str) and item.startswith(("http://", "https://")):
-        try:
-            from urllib.parse import urlparse
-
-            parsed = urlparse(item)
-            return {
-                "host": parsed.hostname,
-                "scheme": parsed.scheme,
-                "path": parsed.path,
-                "redacted_query": True,
-            }
-        except ValueError:
-            return "[unparseable-url]"
-    if isinstance(item, str) and len(item) > 96:
-        return item[:64] + "..."
-    return item
+                return "[unparseable-url]"
+        if len(value) > 96:
+            return value[:64] + "..."
+        return value
+    return value
 
 
 def _summarize_inputs(request: MediaRequest) -> list[dict[str, Any]]:

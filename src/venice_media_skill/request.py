@@ -376,6 +376,9 @@ def request_json_schema() -> dict[str, Any]:
         for key, constraints in numeric_constraints.items():
             if key in props:
                 props[key].update(constraints)
+        for key, allowed_values in _ENUM_PARAMETERS.get(op, {}).items():
+            if key in props:
+                props[key]["enum"] = list(allowed_values)
         if op == "image.generate" and "variants" in props:
             props["variants"]["description"] = (
                 "Canonical image count (1-4). The bridge uses binary response mode and omits the wire-level "
@@ -660,6 +663,16 @@ def _reject_unknown_inputs(inputs: Mapping[str, Any], operation: str) -> None:
                 raise PayloadValidationError(f"inputs.{key} must be a list of objects for {operation}.")
 
 
+# Globally fixed provider enumerations from the pinned OpenAPI snapshot.
+# Model-specific constraints (voices, aspect ratios, durations, …) remain
+# live-model driven; these are stable endpoint-level contracts.
+_ENUM_PARAMETERS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
+    "audio.tts": {"response_format": ("mp3", "opus", "aac", "flac", "wav", "pcm")},
+    "audio.transcribe": {"response_format": ("json", "text")},
+    "video.transcribe": {"response_format": ("json", "text")},
+}
+
+
 _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     "image.generate": {
         "strings": {
@@ -807,6 +820,14 @@ def _validate_parameters(request: MediaRequest) -> None:
             raise PayloadValidationError("parameters.top_p must be in [0, 1].")
         if key == "reference_video_total_duration" and float(value) < 0:
             raise PayloadValidationError("parameters.reference_video_total_duration must be non-negative.")
+    for key, allowed_values in _ENUM_PARAMETERS.get(op, {}).items():
+        if key not in request.parameters:
+            continue
+        value = request.parameters[key]
+        if isinstance(value, str) and value in allowed_values:
+            continue
+        choices = ", ".join(allowed_values)
+        raise PayloadValidationError(f"parameters.{key} must be one of: {choices}.")
 
 
 def _validate_video_inputs(inputs: Mapping[str, Any], duration: Any) -> None:

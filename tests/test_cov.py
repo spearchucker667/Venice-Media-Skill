@@ -70,8 +70,8 @@ from venice_media_skill.request import MediaRequest
 from venice_media_skill.runner import (
     MediaRunner,
     _sanitize_api_request,
+    _sanitize_value,
     _summarize_inputs,
-    _summarize_list_member,
 )
 from venice_media_skill.util import (
     decode_data_url,
@@ -748,11 +748,11 @@ def test_runner_summarize_inputs(tmp_path: Path) -> None:
 
 def test_runner_summarize_list_member_branches() -> None:
     data_url = f"data:image/png;base64,{base64.b64encode(_PNG).decode('ascii')}"
-    out = _summarize_list_member(data_url)  # type: ignore[attr-defined]
+    out = _sanitize_value("video.generate", None, data_url)  # type: ignore[attr-defined]
     assert out["redacted"] is True
-    out = _summarize_list_member("https://x.example/foo?token=secret")  # type: ignore[attr-defined]
+    out = _sanitize_value("video.generate", None, "https://x.example/foo?token=secret")  # type: ignore[attr-defined]
     assert out["redacted_query"] is True
-    out = _summarize_list_member("x" * 200)
+    out = _sanitize_value("video.generate", None, "x" * 200)
     assert out.endswith("...")
     assert len(out) == 67
 
@@ -767,6 +767,38 @@ def test_runner_sanitize_api_request_branches() -> None:
     assert isinstance(out["x"], list)
     out = _sanitize_api_request("video.generate", {"x": "%not-a-url%"})  # type: ignore[attr-defined]
     assert out["x"] == "%not-a-url%"
+
+
+def test_runner_sanitize_api_request_nested_keyframes_redact_media() -> None:
+    payload = {
+        "model": "video-model",
+        "prompt": "test",
+        "keyframes": [
+            {
+                "image_url": "data:image/png;base64,aGVsbG8=",
+                "frame_index": 24,
+            }
+        ],
+        "style_references": [
+            {
+                "image": "data:image/png;base64,aGVsbG8=",
+                "strength": 0.7,
+            }
+        ],
+        "elements": [{"image_url": "https://example.com/x.png?token=secret", "weight": 1}],
+    }
+    out = _sanitize_api_request("video.generate", payload)  # type: ignore[attr-defined]
+    keyframe = out["keyframes"][0]
+    assert keyframe["image_url"]["kind"] == "local_media"
+    assert keyframe["image_url"]["redacted"] is True
+    assert keyframe["frame_index"] == 24
+    style_ref = out["style_references"][0]
+    assert style_ref["image"]["kind"] == "local_media"
+    assert style_ref["strength"] == 0.7
+    element = out["elements"][0]
+    assert element["image_url"]["host"] == "example.com"
+    assert element["image_url"]["redacted_query"] is True
+    assert element["weight"] == 1
 
 
 def test_runner_save_transcript_json_and_text(tmp_path: Path) -> None:

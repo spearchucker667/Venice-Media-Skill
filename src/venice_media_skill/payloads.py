@@ -7,8 +7,11 @@ each operation flows through exactly one builder here, ensuring:
 
 * No reserved/transport-control keys ever appear in a provider body.
 * ``consents.seedance`` is never added from arbitrary ``parameters``.
-* Quote and queue payloads are derived from the same canonical payload for
-  the same logical request.
+* The video quote body is a typed projection of the queue body and shares
+  the ``queue_payload_hash``; the audio quote body legitimately adds the
+  billing-only ``character_count`` field, so its approval binds to the
+  ``quote_payload_hash`` instead. Both hashes are canonical SHA-256 values
+  over the exact provider body.
 * Every builder produces a stable hash so consent challenges and quote
   approvals are bound to the exact bytes the provider will receive.
 
@@ -393,15 +396,19 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
     return _wrap(request, "video.generate", "/video/queue", payload)
 
 
-def build_video_quote(request: MediaRequest) -> CanonicalPayload:
+def build_video_quote(request: MediaRequest, queue: CanonicalPayload | None = None) -> CanonicalPayload:
     """``POST /video/quote`` - canonical provider body.
 
     Derived from the same canonical queue payload so the quote response
     cannot disagree with what gets queued. The quote body is a typed
     projection of the queue body with reference media stripped; we keep
     the queue payload's hash so the quote/queue gate cannot diverge.
+
+    Pass the already-built ``queue`` canonical to avoid re-normalizing
+    local media inputs (which would read, validate, and base64-encode
+    every file twice and open a small TOCTOU window between builds).
     """
-    queue_canonical = build_video_queue(request)
+    queue_canonical = queue if queue is not None else build_video_queue(request)
     expected_keys = (
         "model",
         "duration",
@@ -442,14 +449,17 @@ def build_audio_queue(request: MediaRequest) -> CanonicalPayload:
     return _wrap(request, "audio.generate", "/audio/queue", payload)
 
 
-def build_audio_quote(request: MediaRequest) -> CanonicalPayload:
+def build_audio_quote(request: MediaRequest, queue: CanonicalPayload | None = None) -> CanonicalPayload:
     """``POST /audio/quote`` - canonical provider body for audio quoting.
 
     Quote schema only accepts: model, duration_seconds, character_count.
     ``character_count`` is quote-only (not in the queue body) so we pull
     it from the original request parameters.
+
+    Pass the already-built ``queue`` canonical to avoid building the queue
+    body twice.
     """
-    queue_canonical = build_audio_queue(request)
+    queue_canonical = queue if queue is not None else build_audio_queue(request)
     expected_keys = ("model", "duration_seconds")
     quote_payload = {key: value for key, value in queue_canonical.payload.items() if key in expected_keys}
     if "model" not in quote_payload and request.model is not None:

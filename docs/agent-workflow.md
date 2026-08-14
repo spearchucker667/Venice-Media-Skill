@@ -72,7 +72,7 @@ venice-media approve-quote <operation> <payload_hash> \
   --max-cost <USD>
 ```
 
-Then resubmit the unchanged manifest. The bridge attaches the recorded approval to the queue request and verifies it against the same canonical hash. The boolean `confirmed_cost` field is informational only and is ignored by the gate.
+Then resubmit the unchanged manifest. The bridge attaches the recorded approval to the queue request and verifies it against the canonical approval hash — the queue payload hash for video, and the quote payload hash for audio (the audio quote adds the billing-only `character_count` field that the queue body omits). The boolean `confirmed_cost` field is informational only and is ignored by the gate.
 
 ## 7. Execute and monitor
 

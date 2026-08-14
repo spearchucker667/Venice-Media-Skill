@@ -215,3 +215,59 @@ def test_missing_prompt_question_and_unsupported_operation() -> None:
     assert "prompt" in fields(result)
     with pytest.raises(ValueError, match="Unsupported operation"):
         Planner(catalog).plan("unknown.operation")  # type: ignore[arg-type]
+
+
+def test_style_reference_plan_uses_model_capability() -> None:
+    catalog = FakeCatalog(
+        model(
+            "img-style",
+            {"maxStyleReferences": 3, "supportsStyleReferenceStrength": True},
+            supportsStyleReferences=True,
+        )
+    )
+    result = Planner(catalog).plan(  # type: ignore[arg-type]
+        "image.generate", model="img-style", prompt="sunset"
+    )
+    question = next(q for q in result["questions"] if q["field"] == "inputs.style_references")
+    assert "at most 3" in question["note"]
+    assert "ignored" not in question["note"]
+
+
+def test_style_reference_plan_notes_unsupported_model() -> None:
+    catalog = FakeCatalog(model("img-nostyle", {}, supportsStyleReferences=False))
+    result = Planner(catalog).plan(  # type: ignore[arg-type]
+        "image.generate", model="img-nostyle", prompt="sunset"
+    )
+    question = next(q for q in result["questions"] if q["field"] == "inputs.style_references")
+    assert "does not support" in question["note"]
+
+
+def test_voice_clone_plan_uses_model_capability() -> None:
+    catalog = FakeCatalog(
+        model(
+            "tts-chatterbox-hd",
+            {},
+            voice_cloning={
+                "mode": "zero_shot",
+                "accepted_formats": ["mp3", "wav", "flac", "m4a"],
+                "min_sample_seconds": 5,
+                "retention_days": 7,
+            },
+        )
+    )
+    result = Planner(catalog).plan(  # type: ignore[arg-type]
+        "audio.voice_clone", model="tts-chatterbox-hd"
+    )
+    question = next(q for q in result["questions"] if q["field"] == "inputs.audio")
+    assert "MP3/WAV/FLAC/M4A" in question["question"]
+    assert "5 seconds" in question["note"]
+    assert "7 days" in question["note"]
+
+
+def test_voice_clone_plan_without_capability_metadata() -> None:
+    catalog = FakeCatalog(model("tts-plain", {}))
+    result = Planner(catalog).plan(  # type: ignore[arg-type]
+        "audio.voice_clone", model="tts-plain"
+    )
+    question = next(q for q in result["questions"] if q["field"] == "inputs.audio")
+    assert "model-specific" in question["note"]

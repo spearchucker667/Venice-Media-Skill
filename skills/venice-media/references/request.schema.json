@@ -55,6 +55,10 @@
             "type": "string"
           },
           "response_format": {
+            "enum": [
+              "json",
+              "text"
+            ],
             "type": "string"
           },
           "timestamps": {
@@ -70,6 +74,14 @@
             "type": "string"
           },
           "response_format": {
+            "enum": [
+              "mp3",
+              "opus",
+              "aac",
+              "flac",
+              "wav",
+              "pcm"
+            ],
             "type": "string"
           },
           "speed": {
@@ -291,6 +303,10 @@
         "additionalProperties": false,
         "properties": {
           "response_format": {
+            "enum": [
+              "json",
+              "text"
+            ],
             "type": "string"
           }
         },
@@ -457,6 +473,10 @@
                 "type": "string"
               },
               "response_format": {
+                "enum": [
+                  "json",
+                  "text"
+                ],
                 "type": "string"
               },
               "timestamps": {
@@ -507,6 +527,14 @@
                 "type": "string"
               },
               "response_format": {
+                "enum": [
+                  "mp3",
+                  "opus",
+                  "aac",
+                  "flac",
+                  "wav",
+                  "pcm"
+                ],
                 "type": "string"
               },
               "speed": {
@@ -1204,6 +1232,10 @@
             "additionalProperties": false,
             "properties": {
               "response_format": {
+                "enum": [
+                  "json",
+                  "text"
+                ],
                 "type": "string"
               }
             },

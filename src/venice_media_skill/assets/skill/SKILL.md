@@ -205,7 +205,7 @@ venice-media approve-quote <operation> <payload_hash> \
   --max-cost <USD>
 ```
 
-Then resubmit the same manifest. `confirmed_cost` is informational and not consulted by the gate. The bridge records the approval, attaches it to the queue request, and posts the queue body with the same canonical hash so the actor cannot accidentally quote a different request than the one queued.
+Then resubmit the same manifest. `confirmed_cost` is informational and not consulted by the gate. The bridge records the approval, attaches it to the queue request, and binds the approval to a canonical payload hash so the actor cannot accidentally quote a different request than the one queued. For video the approval hash is the queue payload hash (the quote is a projection of the same body). For audio the approval hash is the quote payload hash, because the audio quote legitimately includes the billing-only `character_count` field that the queue body does not carry.
 
 ## Execute
 

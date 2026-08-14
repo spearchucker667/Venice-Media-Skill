@@ -63,7 +63,7 @@ Targeted commands:
 | Single test | `python -m pytest tests/test_security.py::TestReservedParameterRejection -q` |
 | OpenAPI snapshot check | `python -m venice_media_skill validate-openapi references/venice-openapi.yaml` |
 | Regenerate request schema | `python -m venice_media_skill schema --output references/request.schema.json` |
-| Sync upstream API docs | `python scripts/sync-venice-api-docs.py --upstream <path> [--pin <sha>]` |
+| Sync upstream API docs | `python scripts/sync-venice-api-docs.py <upstream-checkout> [--sha <commit>]` |
 | Verify release metadata | `python scripts/verify-release.py vX.Y.Z` |
 | Editable install | `python -m pip install -e '.[dev]'` |
 | Build wheel + sdist | `python -m build` |
@@ -136,7 +136,7 @@ Never hand-edit one mirror. Edit the canonical file, then regenerate or sync thr
 ## API-sync procedure
 
 1. Clone or update `https://github.com/veniceai/api-docs`.
-2. Run `python scripts/sync-venice-api-docs.py --upstream <path> [--pin <sha>]`.
+2. Run `python scripts/sync-venice-api-docs.py <upstream-checkout> [--sha <commit>]`.
 3. The script writes `references/venice-openapi.yaml`, mirrors it, regenerates `references/request.schema.json`, and records upstream provenance.
 4. Run `./scripts/validate.sh`.
 5. Update tests and docs for any contract change.
@@ -185,7 +185,7 @@ Treat any change to the following as a security change, not a refactor:
 - **Explicit Seedance face-consent confirmation.** A `409 needs_consent` persists a hash-bound `ConsentChallenge`. The runner attaches `consents.seedance` only after the host invokes `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>`. Never auto-resubmit.
 - **Quote gating for paid queued operations.** `video.generate` and `audio.generate` require a hash-bound, single-use, max-cost-enforced approval via `venice-media approve-quote <op> <payload_hash> --quote <file> --max-cost <USD>`.
 - **Timeout-safe queue recovery.** On poll timeout, the runner returns the `queue_id`. The host retrieves via `video.retrieve` / `audio.retrieve` using `parameters.queue_id`. Never auto-resubmit paid queued jobs.
-- **Reserved / transport keys rejected inside `parameters`.** `payloads.assert_no_reserved_parameters` rejects `consents`, `model`, `prompt`, `queueId`, `download_url`/`downloadUrl`, `image_url`/`imageUrl`, `Authorization`, `api_key`, `stream`, `return_binary`, etc. Quote and queue payloads derive from the same canonical hash so the gate is uniform.
+- **Reserved / transport keys rejected inside `parameters`.** `payloads.assert_no_reserved_parameters` rejects `consents`, `model`, `prompt`, `queueId`, `download_url`/`downloadUrl`, `image_url`/`imageUrl`, `Authorization`, `api_key`, `stream`, `return_binary`, etc. The quote approval gate binds to a canonical hash: for video the quote payload is a projection of the queue payload and shares its hash (`queue_payload_hash`); for audio the quote body legitimately adds billing-only `character_count`, so approval binds to the `quote_payload_hash` instead. Each `approve-quote` records which hash it approved.
 - **Atomic artifact writes.** Write to temp files, fsync, atomic rename; cross-filesystem fallback validates size and SHA-256 before replacing.
 - **Path containment.** Output filenames and configured directories are validated against traversal, absolute paths, null bytes, drive letters, UNC paths, and protected system directories.
 

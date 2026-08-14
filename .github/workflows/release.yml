@@ -88,10 +88,14 @@ jobs:
             --output="dist/venice-media-skill-${VERSION}-source.tar.gz" HEAD
           (cd dist && sha256sum * > SHA256SUMS.txt)
 
+      - name: Extract release notes from CHANGELOG.md
+        run: python scripts/extract-changelog-notes.py "${GITHUB_REF_NAME}" --output release-notes.md
+
       - name: Create GitHub release
         # softprops/action-gh-release@v2.2.2 — pinned to immutable SHA.
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
         with:
           files: |
             dist/*
+          body_path: release-notes.md
           generate_release_notes: true

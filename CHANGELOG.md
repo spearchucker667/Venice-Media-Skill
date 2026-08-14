@@ -6,6 +6,25 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 Changes that have been committed but not yet released.
 
+## [1.3.1] - 2026-08-14
+
+### Security
+
+- Fixed a dry-run/diagnostic redaction gap: nested provider media keys (e.g. `image_url` inside `keyframes`, `style_references`, `elements`) and any `data:*;base64,...` string are now redacted recursively, so local media converted to data URLs can no longer leak into `dry_run` JSON output or metadata sidecars.
+
+### Fixed
+
+- `docs/api-sync.md`, `AGENTS.md`, and `docs/releasing.md` now document the actual `sync-venice-api-docs.py` CLI (`<checkout> [--sha <commit>]`).
+- `docs/media-generation-guide.md` now describes the real `audio.voice_clone` contract (`model` + `inputs.audio`, multipart `file`) and `video.transcribe` contract (YouTube `inputs.url`, JSON body, `response_format` enum).
+- Default transcript artifact filenames are now operation-aware (`audio-transcribe-*`, `video-transcribe-*`) instead of always `audio-transcript-*`.
+- Quote/queue hash documentation now matches the implementation: video approvals bind to the queue payload hash, audio approvals bind to the quote payload hash (which adds billing-only `character_count`).
+- The video/audio quote builders accept the already-built queue canonical instead of re-normalizing local media inputs a second time.
+- `audio.tts`, `audio.transcribe`, and `video.transcribe` now enforce the pinned OpenAPI `response_format` enumerations locally and in the generated request schema.
+- The API-sync workflow now preserves the recorded `retrieved_utc` when the upstream SHA is unchanged, making a no-op sync byte-identical.
+- The API-drift workflow now treats upstream HEAD movement as informational and fails only on watched media-schema or required-endpoint changes, comparing through the same normalization the sync script applies.
+- The planner surfaces model-specific `supportsStyleReferences` / `maxStyleReferences` / `supportsStyleReferenceStrength` and `voice_cloning` capability constraints instead of generic guidance.
+- GitHub Release bodies are now extracted from the matching `CHANGELOG.md` section, with GitHub-generated notes appended.
+
 ## [1.3.0] - 2026-08-14
 
 ### Added
@@ -74,7 +93,8 @@ Changes that have been committed but not yet released.
 - Durable queue records for timeout-safe retrieval.
 - Seedance 2.0 consent flow.
 
-[Unreleased]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/spearchucker667/Venice-Media-Skill/compare/v0.1.0...v1.2.0
-[0.1.0]: https://github.com/spearchucker667/Venice-Media-Skill/releases/tag/v0.1.0
+[1.2.0]: https://github.com/spearchucker667/Venice-Media-Skill/releases/tag/v1.2.0
+[0.1.0]: https://github.com/spearchucker667/Venice-Media-Skill/commits/main

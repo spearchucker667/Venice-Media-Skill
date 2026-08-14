@@ -226,14 +226,47 @@ def _questions_for_model(
                     [True, False],
                     default=False,
                 ),
+            ]
+        )
+        supports_style_refs = model_spec.get("supportsStyleReferences")
+        if supports_style_refs:
+            max_refs = constraints.get("maxStyleReferences")
+            supports_strength = constraints.get("supportsStyleReferenceStrength")
+            note_parts = ["Only supported by models advertising supportsStyleReferences."]
+            if isinstance(max_refs, (int, float)):
+                note_parts.append(f"This model accepts at most {int(max_refs)} reference(s).")
+            if supports_strength is False:
+                note_parts.append("Per-reference strength is ignored by this model.")
+            questions.append(
                 _question(
                     "inputs.style_references",
                     False,
                     "Style reference images? List of {image, strength?} objects.",
                     default=None,
-                ),
-            ]
-        )
+                    note=" ".join(note_parts),
+                )
+            )
+        elif supports_style_refs is False:
+            questions.append(
+                _question(
+                    "inputs.style_references",
+                    False,
+                    "Style reference images? List of {image, strength?} objects.",
+                    default=None,
+                    note="This model does not support style references; omit them.",
+                )
+            )
+        else:
+            questions.append(
+                _question(
+                    "inputs.style_references",
+                    False,
+                    "Style reference images? List of {image, strength?} objects.",
+                    default=None,
+                    note="Support is model-specific; check the live catalog for supportsStyleReferences.",
+                )
+            )
+
     elif operation in {"image.edit", "image.multi_edit"}:
         if operation == "image.edit":
             questions.append(
@@ -402,13 +435,35 @@ def _questions_for_model(
     elif operation == "video.transcribe":
         questions.append(_question("inputs.url", True, "Which YouTube video URL should be transcribed?"))
     elif operation == "audio.voice_clone":
-        questions.append(
-            _question(
-                "inputs.audio",
-                True,
-                "Which clean speech audio file (MP3/WAV/FLAC/M4A) should be cloned?",
+        cloning = _dict_value(model_spec, "voice_cloning")
+        if cloning:
+            formats = _list_value(cloning, "accepted_formats")
+            min_seconds = cloning.get("min_sample_seconds")
+            retention = cloning.get("retention_days")
+            mode = cloning.get("mode")
+            fmt = "/".join(str(f).upper() for f in formats) if formats else "model-accepted"
+            note_parts = [f"Mode: {mode}." if mode else ""]
+            if isinstance(min_seconds, (int, float)):
+                note_parts.append(f"Recommended minimum sample length: {min_seconds:g} seconds.")
+            if isinstance(retention, (int, float)):
+                note_parts.append(f"Voice handle retention: {retention:g} days.")
+            questions.append(
+                _question(
+                    "inputs.audio",
+                    True,
+                    f"Which clean speech audio file ({fmt}) should be cloned?",
+                    note=" ".join(part for part in note_parts if part).strip() or None,
+                )
             )
-        )
+        else:
+            questions.append(
+                _question(
+                    "inputs.audio",
+                    True,
+                    "Which clean speech audio file should be cloned?",
+                    note="Accepted formats are model-specific; check the live catalog voice_cloning capability.",
+                )
+            )
     return questions
 
 

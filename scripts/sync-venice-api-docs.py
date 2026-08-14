@@ -122,6 +122,30 @@ def _add_provenance(payload: dict[str, Any], upstream_sha: str, retrieved_at: st
     return payload
 
 
+def _existing_retrieved_utc(target: Path, upstream_sha: str) -> str | None:
+    """Return the previous retrieval timestamp when the upstream SHA is unchanged.
+
+    Keeping the prior timestamp makes a no-op sync against the same upstream
+    commit a byte-identical no-op instead of dirtying the tree solely because
+    the wall clock advanced.
+    """
+    if not target.is_file():
+        return None
+    try:
+        payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    provenance = payload.get(PROVENANCE_KEY)
+    if not isinstance(provenance, dict):
+        return None
+    if provenance.get("upstream_commit") != upstream_sha:
+        return None
+    retrieved = provenance.get("retrieved_utc")
+    return retrieved if isinstance(retrieved, str) else None
+
+
 def _dump_yaml(payload: dict[str, Any], path: Path) -> None:
     # default_flow_style=False preserves human readability; sort_keys=False
     # keeps the upstream ordering stable.
@@ -185,28 +209,22 @@ def _validate_openapi(path: Path) -> None:
         _fail(f"OpenAPI validation failed for {path}: {result.stderr.strip()}")
 
 
-def _load_yaml_for_comparison(path: Path) -> dict[str, Any]:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and PROVENANCE_KEY in payload:
-        payload[PROVENANCE_KEY] = dict(payload[PROVENANCE_KEY])
-        payload[PROVENANCE_KEY].pop("retrieved_utc", None)
-    return payload
-
-
 def _snapshot_is_idempotent(checkout: Path, sha: str, original_output: Path) -> bool:
     """Return True if re-running the sync on the same input reproduces the output.
 
-    The provenance ``retrieved_utc`` field is excluded from the comparison because
-    it legitimately changes on every execution.
+    ``retrieved_utc`` is preserved from the existing snapshot when the upstream
+    SHA is unchanged, so a no-op sync is a true byte-for-byte no-op.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_output = Path(tmpdir) / "venice-openapi.yaml"
         payload, _ = _load_upstream(checkout, sha)
         payload = _coerce_string_schema_bools(payload)
-        retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        retrieved_at = _existing_retrieved_utc(original_output, sha) or datetime.now(UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
         payload = _add_provenance(payload, sha, retrieved_at)
         _dump_yaml(payload, temp_output)
-        return _load_yaml_for_comparison(temp_output) == _load_yaml_for_comparison(original_output)
+        return temp_output.read_bytes() == original_output.read_bytes()
 
 
 def main() -> int:
@@ -224,10 +242,10 @@ def main() -> int:
 
     payload, upstream_sha = _load_upstream(checkout, args.sha)
     payload = _coerce_string_schema_bools(payload)
-    retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    target = REFERENCE_DIR / "venice-openapi.yaml"
+    retrieved_at = _existing_retrieved_utc(target, upstream_sha) or datetime.now(UTC).isoformat().replace("+00:00", "Z")
     payload = _add_provenance(payload, upstream_sha, retrieved_at)
 
-    target = REFERENCE_DIR / "venice-openapi.yaml"
     _dump_yaml(payload, target)
 
     _validate_openapi(target)

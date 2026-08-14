@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import unittest.mock
 from pathlib import Path
 from typing import Any
@@ -303,6 +304,31 @@ def test_tts_dry_run_is_canonical(tmp_path: Path) -> None:
     payload = dry["api_request"]
     assert payload["model"] == "tts-model"
     assert payload["input"] == "hello"
+
+
+def test_video_dry_run_redacts_nested_keyframe_media(tmp_path: Path) -> None:
+    """Keyframe image data URLs must not leak into dry-run JSON output."""
+    image = tmp_path / "key.png"
+    image.write_bytes(_PNG)
+    dry = make_runner(tmp_path, FakeClient()).run(
+        request(
+            {
+                "operation": "video.generate",
+                "model": "video-model",
+                "prompt": "test",
+                "parameters": {"duration": "5s"},
+                "inputs": {"keyframes": [{"image": str(image), "frame_index": 24}]},
+                "execution": {"dry_run": True},
+            }
+        )
+    )
+    rendered = json.dumps(dry)
+    assert "data:image/png;base64" not in rendered
+    assert "iVBORw0KGgo" not in rendered  # PNG signature in base64
+    keyframe = dry["api_request"]["keyframes"][0]
+    assert keyframe["image_url"]["kind"] == "local_media"
+    assert keyframe["image_url"]["redacted"] is True
+    assert keyframe["frame_index"] == 24
 
 
 def test_tts_save_writes_artifacts(tmp_path: Path) -> None:

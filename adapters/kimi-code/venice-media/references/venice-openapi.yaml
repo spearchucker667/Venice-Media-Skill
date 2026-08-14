@@ -14285,7 +14285,7 @@ paths:
 x-venice-media-skill-provenance:
   upstream_repository: https://github.com/veniceai/api-docs
   upstream_commit: db3b9f4f40fe71abff2011bcaa9c23ad797c94f3
-  retrieved_utc: '2026-08-14T21:04:20.881589Z'
+  retrieved_utc: '2026-08-14T21:36:48.823714Z'
   info_version: '20260814.153445'
   local_corrections:
   - Coerce boolean values to strings inside string-typed schema fields (enum/default/example;

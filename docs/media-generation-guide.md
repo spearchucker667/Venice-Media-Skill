@@ -13,7 +13,7 @@ Use `image.generate` with the native `/image/generate` endpoint. The bridge defa
 
 `return_binary` is an internal transport decision and is rejected in user parameters. JSON-mode responses use the native `images` array of raw-base64 values. The writer validates and decodes every image before atomically publishing any artifact, preserves response order, and records one-based `variant_index`/`variant_count` metadata.
 
-Newer supported controls include `enhance_prompt` and `style_references`. `style_references` is structured media data; the bridge validates array bounds and normalizes each reference the same way it normalizes image inputs.
+Newer supported controls include `enhance_prompt` and `style_references`. `style_references` is structured media data: a list of `{image, strength?}` objects with `strength` in `[0.1, 1]`. Each reference image is normalized like any other image input. Style references are only honored by models reporting `supportsStyleReferences: true` in the live catalog; the per-model limit (`maxStyleReferences`) and strength support (`supportsStyleReferenceStrength`) are model constraints surfaced by `venice-media plan image.generate --model <id>`, not static bridge limits.
 
 Sizing is model-specific:
 
@@ -58,8 +58,9 @@ The bridge normalizes at the endpoint boundary; do not manually rewrite media un
 | Image upscale | Local path, data URL, or raw base64 | Validated raw base64 without a data-URL prefix |
 | Image/reference-to-video | Local path, data URL, or URL | Typed URL field; local files become data URLs |
 | TTS / generated audio | Text prompt and typed parameters | JSON; no local media input |
-| Transcription | Local audio path | Multipart file upload |
-| Voice clone | Local audio sample + name + description + optional labels | Multipart form data |
+| Audio transcription | Local audio path | Multipart file upload (field `file`) |
+| Voice clone | Local audio sample path | Multipart file upload (field `file`) |
+| Video transcription | YouTube URL | JSON body |
 
 ## Video generation
 
@@ -153,19 +154,25 @@ Quote first, then queue. Preserve the queue ID.
 
 ## Transcription
 
-Use `audio.transcribe` with an explicit local audio file. The bridge sends multipart form data. JSON or text output is written locally with a metadata sidecar.
+Use `audio.transcribe` with an explicit local audio file in `inputs.audio`. The bridge sends multipart form data with the audio as the `file` field plus `model`, `response_format` (`json` or `text`), optional `timestamps`, and optional `language`. JSON or text output is written locally with a metadata sidecar.
 
 ## Voice cloning
 
-Use `audio.voice_clone` with a local audio sample. The bridge sends multipart form data with:
+Use `audio.voice_clone` with a local audio sample in `inputs.audio` and the target TTS `model`. The bridge sends multipart form data with the sample as the `file` field plus `model`, to `POST /audio/voices`. The provider returns a voice handle (e.g. `vv_<id>`); pass it back as `parameters.voice` on `audio.tts` together with the same model.
 
-- `name` (required)
-- `audio_file` (required, from the local path)
-- `description` (optional)
-- `labels` (optional array of strings)
-
-The provider returns a voice object; the bridge writes it as a JSON artifact with a metadata sidecar.
+Accepted containers and minimum sample length are model-specific. Check the model's `voice_cloning.accepted_formats`, `min_sample_seconds`, and `retention_days` capability via `venice-media plan audio.voice_clone --model <id>` or the live `/models` catalog before choosing a file.
 
 ## Video transcription
 
-Use `video.transcribe` with a local video file. The bridge sends multipart form data. JSON or text output is written locally with a metadata sidecar.
+Use `video.transcribe` with a YouTube URL in `inputs.url`:
+
+```json
+{
+  "version": "1",
+  "operation": "video.transcribe",
+  "inputs": { "url": "https://www.youtube.com/watch?v=..." },
+  "parameters": { "response_format": "json" }
+}
+```
+
+The bridge sends a JSON body to `POST /video/transcriptions`. `response_format` is `json` (default) or `text`. Output is written locally with a metadata sidecar. No model is required.
