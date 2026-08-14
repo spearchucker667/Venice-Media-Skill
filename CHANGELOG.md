@@ -146,6 +146,6 @@ This project adheres to [Semantic Versioning](https://semver.org/):
 
 <div align="center">
 
-[⬅️ Back to README](README.md) | [📝 Full Changelog](https://github.com/spearchucker667/venice-media-skill/commits/main)
+[⬅️ Back to README](README.md) | [📝 Full Changelog](https://github.com/spearchucker667/Venice-Media-Skill/commits/main)
 
 </div>

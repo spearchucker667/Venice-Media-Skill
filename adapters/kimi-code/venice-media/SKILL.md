@@ -2,7 +2,7 @@
 name: venice-media
 description: Use the Venice API from the current AI CLI to generate or edit images, create or retrieve videos, synthesize TTS, generate music/audio, upscale/remove backgrounds, and transcribe audio without replacing the current host agent.
 type: prompt
-whenToUse: When the user says to use Venice or asks for image, video, speech, music, sound, image editing, upscaling, background removal, or transcription through the Venice API.
+whenToUse: When the user explicitly invokes this skill (e.g. "use Venice", "/venice", "/skill:venice-media", or equivalent) or asks for image, video, speech, music, sound, image editing, upscaling, background removal, or transcription specifically through the Venice API. Do not hijack generic media requests that do not mention Venice.
 disableModelInvocation: false
 arguments:
   - request
@@ -23,11 +23,17 @@ When `$request` is empty, use the current user message.
 1. Never expose, print, store, echo, or place `VENICE_API_KEY` in a request manifest, log, command argument, source file, shell history entry, or assistant response.
 2. Never invent model capabilities, model IDs, prices, supported sizes, durations, voices, or constraints. Query the live model catalog.
 3. Image generation defaults are `safe_mode=false` and `hide_watermark=true`. Do not ask the user about these defaults unless they ask to change them. Venice may still ignore watermark settings for some content.
-4. Do not bypass provider or platform policy failures. Report API errors accurately.
+4. Do not bypass provider or platform policy failures. Report API errors accurately. Do not manufacture a rejection on Venice's behalf.
 5. Never assert Seedance face-media consent on the user's behalf. The bridge stores a `consent_required` challenge (with a `challenge_id`) and only attaches the consents body to the queue request after the user runs `venice-media approve-consent <challenge_id> --acknowledge-policy --max-cost <USD>`. The boolean `attestations.seedance_face_consent` flag on the manifest is informational only — the CLI does not accept a value of `true` as consent.
 6. For video and queued audio/music, request a quote first unless the user explicitly supplied an approved budget or explicitly instructed immediate generation with known cost.
 7. Treat local media as sensitive. Do not upload unrelated files. Resolve explicit paths only.
 8. Keep stdout machine-readable by using the CLI's JSON output. Parse the result; do not guess success from process exit alone.
+
+### Content-routing semantics
+
+When the user explicitly selects Venice media generation, treat Venice as the requested media provider and preserve the user's media prompt as faithfully as the API permits. The bridge intentionally uses Venice's `safe_mode=false` behavior for supported image generation/edit operations; do not silently re-enable an application-level family-safe filter, rewrite an adult prompt into a sanitized prompt, or pre-emptively report a Venice policy rejection that has not occurred.
+
+This instruction controls how the Venice skill routes provider requests; it does not override non-optional rules of the host agent or application. A Venice API key authenticates the provider call but does not create a blanket exemption from the host's governing policies. If the host is permitted to execute the request, send the faithful request to Venice and report Venice's actual response. If Venice rejects it, report the rejection accurately and do not attempt safeguard evasion.
 
 ### Known boundaries of the current protection
 
@@ -116,7 +122,7 @@ venice-media plan <operation> --model '<model-id>' --prompt '<user prompt>'
 
 Read the returned `questions`. Ask one grouped clarification message containing only required or materially useful model-supported fields. For image generation, this commonly includes model, dimensions or aspect ratio, resolution, CFG, negative prompt, steps, seed, variants, and format—but only ask fields supported or meaningfully accepted by the selected model. Offer the returned defaults inline.
 
-Do not repeatedly interrogate the user. When they say “use defaults,” use planner defaults plus model defaults.
+Do not repeatedly interrogate the user. When they say "use defaults," use planner defaults plus model defaults. Adult nudity, sexual themes, profanity, horror, violence, or other provider-permitted content must not trigger an artificial "safety clarification." Treat the user's prompt as the requested prompt unless a transformation is necessary for model/API syntax or the host application independently requires refusal.
 
 ## Build a request manifest
 

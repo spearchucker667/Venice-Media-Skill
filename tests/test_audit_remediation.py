@@ -301,19 +301,29 @@ def test_p13_request_json_schema_is_meta_valid() -> None:
 
 
 def test_p14_committed_schema_matches_runtime(tmp_path: Path) -> None:
-    """P1-4: regenerating the schema reproduces the committed file."""
+    """P1-4: regenerating the schema reproduces the committed file.
+
+    The child Python process uses an absolute PYTHONPATH pointing at the
+    repository source tree so the test is hermetic regardless of whether the
+    current environment has an editable install.
+    """
 
     import subprocess
     import sys
     import tempfile
 
-    committed = Path(__file__).resolve().parents[1] / "references" / "request.schema.json"
+    repo_root = Path(__file__).resolve().parents[1]
+    committed = repo_root / "references" / "request.schema.json"
     with tempfile.TemporaryDirectory() as tmp:
         regen = Path(tmp) / "request.schema.json"
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONPATH": str(repo_root / "src"),
+        }
         subprocess.run(
             [sys.executable, "-m", "venice_media_skill", "schema", "--output", str(regen)],
             check=True,
-            env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+            env=env,
             cwd=tmp_path,
         )
         on_disk = json.loads(committed.read_text())
@@ -410,6 +420,76 @@ def test_p23_p24_lock_path_hashed_and_recovers_stale(tmp_path: Path, monkeypatch
 
 
 # Sanity: confirm the helpers exist so the new tests are discoverable.
+# ---------------------------------------------------------------------------
+# Content-routing contract regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_content_routing_section_present_in_all_skill_mirrors() -> None:
+    """Canonical and bundled skill copies document Venice content-routing semantics."""
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_paths = (
+        repo_root / "skills" / "venice-media" / "SKILL.md",
+        repo_root / "src" / "venice_media_skill" / "assets" / "skill" / "SKILL.md",
+        repo_root / "adapters" / "kimi-code" / "venice-media" / "SKILL.md",
+    )
+    required_phrases = (
+        "Content-routing semantics",
+        "preserve the user's media prompt as faithfully as the API permits",
+        "safe_mode=false",
+        "do not silently re-enable an application-level family-safe filter",
+        "does not override non-optional rules of the host agent",
+        "A Venice API key authenticates the provider call",
+        "does not create a blanket exemption",
+        "report the rejection accurately and do not attempt safeguard evasion",
+    )
+    for path in skill_paths:
+        text = path.read_text(encoding="utf-8")
+        for phrase in required_phrases:
+            assert phrase in text, f"{path.name} missing content-routing phrase: {phrase!r}"
+
+
+def test_adapters_do_not_enable_safe_mode_or_sanitization() -> None:
+    """No host adapter silently enables family-safe filtering or prompt sanitization."""
+    repo_root = Path(__file__).resolve().parents[1]
+    adapter_files = (
+        repo_root / "adapters" / "kimi-code" / "kimi.plugin.json",
+        repo_root / "adapters" / "generic" / "AGENT_INSTRUCTIONS.md",
+    )
+    for path in adapter_files:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "safe_mode=true" not in text, f"{path.name} enables safe_mode=true"
+        assert "family-safe" not in text or "do not silently re-enable" in text, (
+            f"{path.name} may silently enable family-safe filtering"
+        )
+        assert "sanitize" not in text or "rewrite" in text, f"{path.name} may instruct the host to sanitize prompts"
+
+
+def test_skill_activation_is_explicit() -> None:
+    """Skill activation requires an explicit Venice invocation; do not hijack generic requests."""
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_text = (repo_root / "skills" / "venice-media" / "SKILL.md").read_text(encoding="utf-8")
+    plugin_text = (repo_root / "adapters" / "kimi-code" / "kimi.plugin.json").read_text(encoding="utf-8")
+    assert "Do not hijack generic media requests" in skill_text
+    assert "Load the skill only when the user explicitly requests Venice" in plugin_text
+
+
+def test_consent_and_quote_language_intact_in_skill() -> None:
+    """Seedance consent and paid quote gates remain intact in the skill contract."""
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_text = (repo_root / "skills" / "venice-media" / "SKILL.md").read_text(encoding="utf-8")
+    required_phrases = (
+        "approve-consent",
+        "approve-quote",
+        "Seedance",
+        "consent_required",
+        "quote_approval_required",
+        "never auto-resubmits",
+    )
+    for phrase in required_phrases:
+        assert phrase in skill_text, f"SKILL.md missing consent/quote phrase: {phrase!r}"
+
+
 def test_helpers_importable() -> None:
     assert callable(_validate_api_path)
     assert callable(_acquire_lock)

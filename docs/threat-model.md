@@ -384,8 +384,8 @@ If you discover a security vulnerability:
 
 | Method | Details |
 |--------|---------|
-| GitHub Issues | [Report bugs](https://github.com/spearchucker667/venice-media-skill/issues) |
-| Security Reports | [Private vulnerability reporting](https://github.com/spearchucker667/venice-media-skill/security) (preferred) or [SECURITY.md](../SECURITY.md) |
+| GitHub Issues | [Report bugs](https://github.com/spearchucker667/Venice-Media-Skill/issues) |
+| Security Reports | [Private vulnerability reporting](https://github.com/spearchucker667/Venice-Media-Skill/security) (preferred) or [SECURITY.md](../SECURITY.md) |
 
 ---
 
@@ -395,7 +395,7 @@ If you discover a security vulnerability:
 2. [OWASP Threat Modeling](https://owasp.org/www-community/Threat_Modeling)
 3. [CWE/SANS Top 25](https://cwe.mitre.org/top25/)
 4. [NIST SSDF](https://csrc.nist.gov/projects/ssdf)
-5. [Security Audit Report](https://github.com/spearchucker667/venice-media-skill/security)
+5. [Security Audit Report](https://github.com/spearchucker667/Venice-Media-Skill/security)
 
 ---
 

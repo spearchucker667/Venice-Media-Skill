@@ -75,8 +75,8 @@ The host agent&mdash;Kimi Code, Codex, Claude Code, Gemini CLI, OpenCode, or ano
 
 ```bash
 # Clone the repository
-git clone https://github.com/spearchucker667/venice-media-skill.git
-cd venice-media-skill
+git clone https://github.com/spearchucker667/Venice-Media-Skill.git
+cd Venice-Media-Skill
 
 # Install in editable mode
 python -m pip install -e .
@@ -458,7 +458,7 @@ This project is licensed under the **MIT License** - see [LICENSE](LICENSE) for 
 
 ### Reporting Issues
 
-- **Bugs & Feature Requests:** [Open an Issue](https://github.com/spearchucker667/venice-media-skill/issues)
+- **Bugs & Feature Requests:** [Open an Issue](https://github.com/spearchucker667/Venice-Media-Skill/issues)
 - **Security Vulnerabilities:** See [Security Policy](SECURITY.md) for private reporting
 
 ### Getting Help
@@ -469,7 +469,7 @@ This project is licensed under the **MIT License** - see [LICENSE](LICENSE) for 
 
 ### Community
 
-- **Discussions:** [GitHub Discussions](https://github.com/spearchucker667/venice-media-skill/discussions)
+- **Discussions:** [GitHub Discussions](https://github.com/spearchucker667/Venice-Media-Skill/discussions)
 - **Contributing:** [How to Contribute](CONTRIBUTING.md)
 
 ---
@@ -514,13 +514,13 @@ This project is licensed under the **MIT License** - see [LICENSE](LICENSE) for 
 ## 🏆 Acknowledgments
 
 - **Venice AI** for the powerful media generation API
-- **Contributors** - See [GitHub Contributors](https://github.com/spearchucker667/venice-media-skill/graphs/contributors)
+- **Contributors** - See [GitHub Contributors](https://github.com/spearchucker667/Venice-Media-Skill/graphs/contributors)
 - **Open Source Community** for the tools and libraries we depend on
 
 ---
 
 <div align="center">
 
-✨ **Venice Media Skill** | [📖 Documentation](docs/) | [🐛 Issues](https://github.com/spearchucker667/venice-media-skill/issues) | [🤝 Contributing](CONTRIBUTING.md) | [📜 License](LICENSE)
+✨ **Venice Media Skill** | [📖 Documentation](docs/) | [🐛 Issues](https://github.com/spearchucker667/Venice-Media-Skill/issues) | [🤝 Contributing](CONTRIBUTING.md) | [📜 License](LICENSE)
 
 </div>

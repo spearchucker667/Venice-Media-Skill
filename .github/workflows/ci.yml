@@ -23,22 +23,53 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        # Stay on a currently supported major version. Major-version bumps must
+        # be verified against the GitHub runner fleet before merging.
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        # Stay on a currently supported major version. Major-version bumps must
+        # be verified against the GitHub runner fleet before merging.
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
-      - run: python -m compileall -q src
-      - run: python -m ruff check .
-      - run: python -m ruff format --check .
-      - run: python -m mypy src
-      - run: python -m pytest --cov=venice_media_skill --cov-report=term-missing
-      - run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
-      - run: python -m build
+
+      - name: Bootstrap diagnostics
+        run: |
+          python -m pip install --upgrade pip
+          python --version
+          pip --version
+          python -c "import platform; print('platform:', platform.platform())"
+
+      - name: Install editable dev environment
+        run: python -m pip install -e '.[dev]'
+
+      - name: Compile source
+        run: python -m compileall -q src
+
+      - name: Lint with Ruff
+        run: python -m ruff check .
+
+      - name: Check formatting with Ruff
+        run: python -m ruff format --check .
+
+      - name: Type-check with mypy
+        run: python -m mypy src
+
+      - name: Run pytest with coverage
+        run: python -m pytest --cov=venice_media_skill --cov-report=term-missing
+
+      - name: Validate OpenAPI snapshot
+        run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
+
+      - name: Build wheel + sdist
+        run: python -m build
+
       - name: Inspect sdist for forbidden entries
         run: python scripts/inspect-sdist.py
+
       - name: Verify bundled skill/reference mirrors
         run: python scripts/verify-bundled-assets.py
 
@@ -51,19 +82,39 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install build
-      - run: python -m build
+
+      - name: Bootstrap diagnostics
+        run: |
+          python -m pip install --upgrade pip
+          python --version
+          pip --version
+          python -c "import platform; print('platform:', platform.platform())"
+
+      - name: Install build tooling
+        run: python -m pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
       - name: Install the built wheel
         run: python -c "import glob, subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', glob.glob('dist/*.whl')[0]])"
-      - run: python -m venice_media_skill schema
-      - run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
-      - run: python -m venice_media_skill doctor
+
+      - name: Smoke schema command
+        run: python -m venice_media_skill schema
+
+      - name: Smoke OpenAPI validation
+        run: python -m venice_media_skill validate-openapi references/venice-openapi.yaml
+
+      - name: Smoke doctor command
+        run: python -m venice_media_skill doctor
         env:
           VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
           VENICE_MEDIA_CACHE_DIR: ${{ runner.temp }}/venice-media/cache
@@ -79,19 +130,34 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip build
+
+      - name: Bootstrap diagnostics
+        run: |
+          python -m pip install --upgrade pip
+          python --version
+          pip --version
+          python -c "import platform; print('platform:', platform.platform())"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+
       - name: Build wheel + sdist
         run: python -m build
+
       - name: Install wheel in fresh venv (no -e flag)
         run: |
           python -m venv /tmp/wheel-venv
           /tmp/wheel-venv/bin/python -m pip install --upgrade pip
           /tmp/wheel-venv/bin/python -m pip install dist/venice_media_skill-*-py3-none-any.whl
+
       - name: Smoke the installed console script + bundled assets
         run: |
           set -e
@@ -106,6 +172,7 @@ jobs:
               'bundled OpenAPI yaml missing'
           print('wheel-smoke: bundled assets reachable via importlib.resources')
           "
+
       - name: Install and smoke the sdist in a second clean venv
         run: |
           python -m venv /tmp/sdist-venv
@@ -118,13 +185,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Install pins matching pyproject.toml lower bounds
+
+      - name: Bootstrap diagnostics
         run: |
           python -m pip install --upgrade pip
+          python --version
+          pip --version
+
+      - name: Install pins matching pyproject.toml lower bounds
+        run: |
           python -m pip install \
             "httpx==0.28.1" \
             "jsonschema==4.23.0" \
@@ -132,6 +208,7 @@ jobs:
             "platformdirs==4.3.6" \
             "PyYAML==6.0.2"
           python -m pip install -e .
+
       - name: Smoke the bridge against the lowest acceptable dependencies
         env:
           VENICE_MEDIA_CONFIG_DIR: ${{ runner.temp }}/venice-media/config
@@ -154,13 +231,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e . pip-audit bandit
-      - run: python -m pip_audit
-      - run: python -m bandit -q -r src
-      - run: python -m pip check
+
+      - name: Bootstrap diagnostics
+        run: |
+          python -m pip install --upgrade pip
+          python --version
+          pip --version
+
+      - name: Install package + security tools
+        run: python -m pip install -e . pip-audit bandit
+
+      - name: Audit Python dependencies
+        run: python -m pip_audit
+
+      - name: Scan source with Bandit
+        run: python -m bandit -q -r src
+
+      - name: Verify installed package set
+        run: python -m pip check

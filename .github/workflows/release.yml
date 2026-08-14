@@ -13,16 +13,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        # Stay on a currently supported major version. Major-version bumps must
+        # be verified against the GitHub runner fleet before merging.
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        # Stay on a currently supported major version. Major-version bumps must
+        # be verified against the GitHub runner fleet before merging.
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
+
+      - name: Bootstrap diagnostics
+        run: |
+          python -m pip install --upgrade pip
+          python --version
+          pip --version
+          python -c "import platform; print('platform:', platform.platform())"
+
+      - name: Install editable dev environment
+        run: python -m pip install -e '.[dev]'
+
       - name: Verify tag, package version, and changelog
         run: python scripts/verify-release.py "${GITHUB_REF_NAME}"
-      - run: ./scripts/validate.sh
+
+      - name: Run full validation contract
+        run: ./scripts/validate.sh
+
       - name: Build source repository archives
         shell: bash
         run: |
@@ -32,7 +51,11 @@ jobs:
           git archive --format=tar.gz --prefix="venice-media-skill-${VERSION}/" \
             --output="dist/venice-media-skill-${VERSION}-source.tar.gz" HEAD
           (cd dist && sha256sum * > SHA256SUMS.txt)
-      - uses: softprops/action-gh-release@v3
+
+      - name: Create GitHub release
+        # Pinned to an immutable commit SHA. Verify the SHA against the
+        # upstream release notes before bumping the major version.
+        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e
         with:
           files: |
             dist/*

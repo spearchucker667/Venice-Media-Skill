@@ -55,9 +55,9 @@ venice-media = "venice_media_skill.cli:main"
 venice-media-keychain = "venice_media_skill.keychain:main"
 
 [project.urls]
-Documentation = "https://github.com/spearchucker667/venice-media-skill#readme"
-Issues = "https://github.com/spearchucker667/venice-media-skill/issues"
-Source = "https://github.com/spearchucker667/venice-media-skill"
+Documentation = "https://github.com/spearchucker667/Venice-Media-Skill#readme"
+Issues = "https://github.com/spearchucker667/Venice-Media-Skill/issues"
+Source = "https://github.com/spearchucker667/Venice-Media-Skill"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/venice_media_skill"]

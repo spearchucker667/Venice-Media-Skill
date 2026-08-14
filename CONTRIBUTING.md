@@ -47,7 +47,7 @@ To maintain security, privacy, and quality standards, all contributors **must** 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/spearchucker667/venice-media-skill.git
+git clone https://github.com/spearchucker667/Venice-Media-Skill.git
 cd venice-media-skill
 
 # 2. Create and activate virtual environment
@@ -149,14 +149,14 @@ All contributions are welcome and recognized:
 - Test improvements
 - CI/CD enhancements
 
-Contributors are listed in the [GitHub Contributors](https://github.com/spearchucker667/venice-media-skill/graphs/contributors) graph.
+Contributors are listed in the [GitHub Contributors](https://github.com/spearchucker667/Venice-Media-Skill/graphs/contributors) graph.
 
 ---
 
 ## 🤔 Need Help?
 
-- **Questions?** Open a [Discussion](https://github.com/spearchucker667/venice-media-skill/discussions)
-- **Bugs?** Open an [Issue](https://github.com/spearchucker667/venice-media-skill/issues)
+- **Questions?** Open a [Discussion](https://github.com/spearchucker667/Venice-Media-Skill/discussions)
+- **Bugs?** Open an [Issue](https://github.com/spearchucker667/Venice-Media-Skill/issues)
 - **Security Issues?** See [Security Policy](SECURITY.md) for private reporting
 
 ---

@@ -109,7 +109,7 @@ The project maintainers:
 
 For questions about third-party materials or compliance:
 
-- Open a [Discussion](https://github.com/spearchucker667/venice-media-skill/discussions)
+- Open a [Discussion](https://github.com/spearchucker667/Venice-Media-Skill/discussions)
 - Review the [LICENSE](LICENSE) file
 - Check the [Security Policy](SECURITY.md) for sensitive matters
 
