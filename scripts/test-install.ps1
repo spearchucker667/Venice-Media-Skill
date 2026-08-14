@@ -86,3 +86,5 @@ try {
 } finally {
     if (Test-Path -LiteralPath $TestRoot) { Remove-Item -LiteralPath $TestRoot -Recurse -Force }
 }
+
+exit 0
