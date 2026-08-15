@@ -89,6 +89,9 @@
             "minimum": 0.25,
             "type": "number"
           },
+          "streaming": {
+            "type": "boolean"
+          },
           "style_prompt": {
             "type": "string"
           },
@@ -131,6 +134,9 @@
             "type": "boolean"
           },
           "output_format": {
+            "type": "string"
+          },
+          "quality": {
             "type": "string"
           },
           "resolution": {
@@ -308,6 +314,23 @@
               "text"
             ],
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "video.upscale": {
+        "additionalProperties": false,
+        "properties": {
+          "input_height": {
+            "type": "integer"
+          },
+          "upscale_factor": {
+            "enum": [
+              1,
+              2,
+              4
+            ],
+            "type": "integer"
           }
         },
         "type": "object"
@@ -542,6 +565,9 @@
                 "minimum": 0.25,
                 "type": "number"
               },
+              "streaming": {
+                "type": "boolean"
+              },
               "style_prompt": {
                 "type": "string"
               },
@@ -713,6 +739,9 @@
                 "type": "boolean"
               },
               "output_format": {
+                "type": "string"
+              },
+              "quality": {
                 "type": "string"
               },
               "resolution": {
@@ -1251,6 +1280,66 @@
         ],
         "type": "object"
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "video.upscale"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "video": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "video"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "input_height": {
+                "type": "integer"
+              },
+              "upscale_factor": {
+                "enum": [
+                  1,
+                  2,
+                  4
+                ],
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "prompt": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "model"
+        ],
+        "type": "object"
+      }
     }
   ],
   "properties": {
@@ -1327,7 +1416,8 @@
         "image.upscale",
         "video.generate",
         "video.retrieve",
-        "video.transcribe"
+        "video.transcribe",
+        "video.upscale"
       ],
       "type": "string"
     },

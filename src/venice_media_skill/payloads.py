@@ -53,6 +53,7 @@ __all__ = [
     "build_video_queue",
     "build_video_quote",
     "build_video_transcribe",
+    "build_video_upscale",
     "build_voice_clone",
     "sha256_hex",
 ]
@@ -394,6 +395,26 @@ def build_video_queue(request: MediaRequest) -> CanonicalPayload:
         else:
             raise ValueError("inputs.keyframes must be a list when provided.")
     return _wrap(request, "video.generate", "/video/queue", payload)
+
+
+def build_video_upscale(request: MediaRequest) -> CanonicalPayload:
+    """``POST /video/queue`` - canonical provider body for video upscaling."""
+    if request.model is None:
+        raise ValueError("video.upscale requires model")
+    if "video" not in request.inputs:
+        raise ValueError("video.upscale requires inputs.video")
+    allowed = allowed_parameter_names("video.upscale")
+    body = _copy_only(request.parameters, allowed)
+    payload: dict[str, Any] = {
+        "model": request.model,
+        "video_url": normalize_media_input(str(request.inputs["video"])),
+    }
+    payload.setdefault("upscale_factor", 2)
+    if "upscale_factor" in body:
+        payload["upscale_factor"] = body["upscale_factor"]
+    if "input_height" in body:
+        payload["input_height"] = body["input_height"]
+    return _wrap(request, "video.upscale", "/video/queue", payload)
 
 
 def build_video_quote(request: MediaRequest, queue: CanonicalPayload | None = None) -> CanonicalPayload:

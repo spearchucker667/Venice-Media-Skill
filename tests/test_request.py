@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from venice_media_skill.cli import main
 from venice_media_skill.errors import RequestValidationError
 from venice_media_skill.request import MediaRequest, request_json_schema
 
@@ -55,3 +58,26 @@ def test_schema_contains_operations() -> None:
     operations = schema["properties"]["operation"]["enum"]
     assert "image.generate" in operations
     assert "video.retrieve" in operations
+
+
+def test_seedance_reference_limits_are_enforced() -> None:
+    with pytest.raises(RequestValidationError, match="at most 9"):
+        MediaRequest.from_mapping(
+            {
+                "operation": "video.generate",
+                "model": "seedance-2-0-reference-to-video",
+                "prompt": "animate",
+                "parameters": {"duration": "5s", "reference_video_total_duration": 5},
+                "inputs": {"reference_images": ["img"] * 10},
+            }
+        )
+
+
+def test_capabilities_command_reports_registry(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = main(["capabilities"])
+    capture = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(capture.out)
+    assert payload["status"] == "ok"
+    assert "video.upscale" in payload["operations"]
+    assert payload["operations"]["video.upscale"]["requires_model"] is True

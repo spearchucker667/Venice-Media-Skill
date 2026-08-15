@@ -7,7 +7,13 @@ from typing import Any, cast
 
 from .catalog import ModelCatalog
 
-MODELLESS_OPERATIONS = {"image.upscale", "image.background_remove", "video.transcribe"}
+MODELLESS_OPERATIONS = {
+    "image.upscale",
+    "image.background_remove",
+    "video.retrieve",
+    "audio.retrieve",
+    "video.transcribe",
+}
 
 _OPERATION_MODEL_TYPE = {
     "image.generate": "image",
@@ -16,6 +22,7 @@ _OPERATION_MODEL_TYPE = {
     "image.upscale": "upscale",
     "image.background_remove": "upscale",
     "video.generate": "video",
+    "video.upscale": "video",
     "audio.generate": "music",
     "audio.tts": "tts",
     "audio.transcribe": "asr",
@@ -35,9 +42,6 @@ class Planner:
         model: str | None = None,
         refresh_models: bool = False,
     ) -> dict[str, Any]:
-        model_type = _OPERATION_MODEL_TYPE.get(operation)
-        if model_type is None:
-            raise ValueError(f"Unsupported operation: {operation}")
         if operation in MODELLESS_OPERATIONS:
             model_less_questions = _questions_for_model(operation, {}, prompt=prompt)
             return {
@@ -52,6 +56,9 @@ class Planner:
                     "then run venice-media run <manifest>."
                 ),
             }
+        model_type = _OPERATION_MODEL_TYPE.get(operation)
+        if model_type is None:
+            raise ValueError(f"Unsupported operation: {operation}")
         if self.catalog is None:
             raise ValueError(f"Model catalog is required for operation: {operation}")
         models = self.catalog.list(model_type, refresh=refresh_models)
@@ -73,14 +80,17 @@ class Planner:
             selected_spec = _dict_value(selected, "model_spec")
             if selected_spec.get("offline") is True:
                 raise ValueError(f"Requested model {model!r} is currently offline.")
+        ranked = _rank_models(models)
         questions: list[dict[str, Any]] = []
         if selected is None:
+            options = [_model_option(item) for item in ranked]
             questions.append(
                 {
                     "field": "model",
                     "required": True,
                     "question": "Which Venice model should be used?",
-                    "options": [_model_option(item) for item in _rank_models(models)[:20]],
+                    "options": options,
+                    "recommended": options[:5],
                     "note": "Model availability and constraints are loaded live from GET /models.",
                 }
             )
@@ -150,6 +160,9 @@ def _questions_for_model(
     if not prompt and operation not in {
         "image.upscale",
         "image.background_remove",
+        "video.upscale",
+        "video.retrieve",
+        "audio.retrieve",
         "audio.transcribe",
         "video.transcribe",
         "audio.voice_clone",
@@ -375,6 +388,21 @@ def _questions_for_model(
                 default=None,
             )
         )
+    elif operation == "video.upscale":
+        questions.extend(
+            [
+                _question("inputs.video", True, "Which local video path or public URL should be upscaled?"),
+                _question("parameters.upscale_factor", False, "Upscale factor?", [1, 2, 4], default=2),
+                _question(
+                    "parameters.input_height",
+                    False,
+                    "Preferred input height for the upscale target?",
+                    default=None,
+                ),
+            ]
+        )
+    elif operation in {"video.retrieve", "audio.retrieve"}:
+        questions.append(_question("parameters.queue_id", True, "Which queue_id should be retrieved?"))
     elif operation == "audio.tts":
         voices = _list_value(constraints, "voices") or _list_value(model_spec, "voices")
         if voices:

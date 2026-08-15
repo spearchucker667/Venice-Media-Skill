@@ -45,7 +45,7 @@ from .installer import SUPPORTED_HOSTS, SUPPORTED_SCOPES, install_skill
 from .jobs import JobStore
 from .output import ArtifactWriter
 from .planner import MODELLESS_OPERATIONS, Planner
-from .request import MediaRequest, request_json_schema
+from .request import CAPABILITY_REGISTRY, MediaRequest, request_json_schema
 from .runner import MediaRunner
 from .util import redact_data
 
@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--prompt")
     plan.add_argument("--model")
     plan.add_argument("--refresh", action="store_true", help="Ignore the local one-hour model cache.")
+
+    capabilities = subparsers.add_parser(
+        "capabilities",
+        help="Return the host-facing operation capability registry used by the request schema and planner.",
+    )
+    capabilities.add_argument("operation", nargs="?", help="Optional operation to fetch exactly one capability entry.")
 
     subparsers.add_parser("installations", help="Report venice-media executables found on PATH without modifying them.")
 
@@ -339,6 +345,12 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any] | list[Any]:
         return _validate_openapi_dispatch(path)
     if args.command == "installations":
         return _installation_diagnostics()
+    if args.command == "capabilities":
+        if args.operation is None:
+            return {"status": "ok", "operations": CAPABILITY_REGISTRY}
+        if args.operation not in CAPABILITY_REGISTRY:
+            raise ValueError(f"Unsupported operation: {args.operation}")
+        return {"status": "ok", "operation": args.operation, "capability": CAPABILITY_REGISTRY[args.operation]}
 
     settings = Settings.load(require_api_key=False)
     settings.ensure_directories()

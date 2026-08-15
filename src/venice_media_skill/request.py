@@ -20,6 +20,7 @@ SUPPORTED_OPERATIONS: Final[frozenset[str]] = frozenset(
         "image.upscale",
         "image.background_remove",
         "video.generate",
+        "video.upscale",
         "video.retrieve",
         "video.transcribe",
         "audio.tts",
@@ -29,6 +30,23 @@ SUPPORTED_OPERATIONS: Final[frozenset[str]] = frozenset(
         "audio.voice_clone",
     }
 )
+
+CAPABILITY_REGISTRY: Final[dict[str, dict[str, Any]]] = {
+    "image.generate": {"model_type": "image", "requires_prompt": True, "requires_model": True},
+    "image.edit": {"model_type": "inpaint", "requires_prompt": True, "requires_model": True},
+    "image.multi_edit": {"model_type": "inpaint", "requires_prompt": True, "requires_model": True},
+    "image.upscale": {"model_type": "upscale", "requires_prompt": False, "requires_model": False},
+    "image.background_remove": {"model_type": "upscale", "requires_prompt": False, "requires_model": False},
+    "video.generate": {"model_type": "video", "requires_prompt": True, "requires_model": True},
+    "video.upscale": {"model_type": "video", "requires_prompt": False, "requires_model": True},
+    "video.retrieve": {"model_type": "video", "requires_prompt": False, "requires_model": False},
+    "video.transcribe": {"model_type": "asr", "requires_prompt": False, "requires_model": True},
+    "audio.tts": {"model_type": "tts", "requires_prompt": True, "requires_model": True},
+    "audio.generate": {"model_type": "music", "requires_prompt": True, "requires_model": True},
+    "audio.retrieve": {"model_type": "audio", "requires_prompt": False, "requires_model": False},
+    "audio.transcribe": {"model_type": "asr", "requires_prompt": False, "requires_model": True},
+    "audio.voice_clone": {"model_type": "tts", "requires_prompt": False, "requires_model": True},
+}
 
 # Top-level structural manifest fields. Anything else at the top level is
 # rejected; arbitrary keys cannot pass through silently because the runner
@@ -80,6 +98,7 @@ _PER_OPERATION_INPUTS: dict[str, set[str]] = {
         "elements",
         "keyframes",
     },
+    "video.upscale": {"video"},
     "video.retrieve": set(),
     "video.transcribe": {"url"},
     "audio.tts": set(),
@@ -95,6 +114,7 @@ _REQUIRED_INPUTS: dict[str, set[str]] = {
     "image.multi_edit": {"images"},
     "image.upscale": {"image"},
     "image.background_remove": {"image"},
+    "video.upscale": {"video"},
     "video.transcribe": {"url"},
     "audio.transcribe": {"audio"},
     "audio.voice_clone": {"audio"},
@@ -282,15 +302,14 @@ class MediaRequest:
             raise RequestValidationError("video.generate requires parameters.duration.")
         if self.operation in {"video.retrieve", "audio.retrieve"} and "queue_id" not in self.parameters:
             raise RequestValidationError(f"{self.operation} requires parameters.queue_id.")
-        if (
-            self.operation.startswith("video.generate") or self.operation.startswith("audio.generate")
-        ) and self.execution.skip_quote:
+        if self.operation in {"video.generate", "video.upscale", "audio.generate"} and self.execution.skip_quote:
             raise RequestValidationError(
                 "execution.skip_quote is unsupported; paid queued generation always requires "
                 "an explicit hash-bound quote approval."
             )
         if self.operation == "video.generate":
             _validate_video_inputs(self.inputs, self.parameters.get("duration"))
+            _validate_seedance_reference_limits(self.model, self.inputs, self.parameters)
         if self.operation == "image.generate":
             _validate_style_references(self.inputs.get("style_references"))
 
@@ -700,7 +719,7 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
         },
     },
     "image.edit": {
-        "strings": {"output_format", "aspect_ratio", "resolution"},
+        "strings": {"output_format", "aspect_ratio", "resolution", "quality"},
         "integers": set(),
         "booleans": {
             "enhance_prompt",
@@ -732,6 +751,11 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
         "numbers": {"reference_video_total_duration"},
         "booleans": {"audio"},
     },
+    "video.upscale": {
+        "integers": {"upscale_factor", "input_height"},
+        "numbers": set(),
+        "booleans": set(),
+    },
     "audio.generate": {
         "strings": {"lyrics_prompt", "voice", "language_code"},
         "integers": {"duration_seconds", "character_count"},
@@ -741,6 +765,7 @@ _PARAM_RULES: dict[str, dict[str, set[str]]] = {
     "audio.tts": {
         "strings": {"voice", "response_format", "language", "style_prompt"},
         "numbers": {"speed", "temperature", "top_p"},
+        "booleans": {"streaming"},
     },
     "audio.transcribe": {
         "strings": {"response_format", "language"},
@@ -861,6 +886,57 @@ def _validate_video_inputs(inputs: Mapping[str, Any], duration: Any) -> None:
         max_index = _max_keyframe_index_for_duration(duration)
         if max_index is not None and indexes and max(indexes) > max_index:
             raise PayloadValidationError(f"inputs.keyframes.frame_index must not exceed duration * 24 ({max_index}).")
+
+
+def _validate_seedance_reference_limits(
+    model: str | None,
+    inputs: Mapping[str, Any],
+    parameters: Mapping[str, Any] | None = None,
+) -> None:
+    """Validate Seedance reference guidance without hard-coding stale universals.
+
+    Current public guidance distinguishes model families; reference-based Seedance
+    models accept a small set of reference inputs, and a combined reference video/
+    audio duration cap applies. We enforce the current caps only for reference-
+    capable families and stay permissive for other model families.
+    """
+    if not model:
+        return
+    normalized = model.strip().lower().replace(" ", "")
+    if "seedance" not in normalized:
+        return
+    is_reference_model = any(tag in normalized for tag in ("reference", "ref-to-video", "reference-to-video"))
+    if not is_reference_model:
+        return
+
+    def count_list(key: str) -> int:
+        value = inputs.get(key)
+        return len(value) if isinstance(value, list) else 0
+
+    ref_images = count_list("reference_images")
+    ref_videos = count_list("reference_videos")
+    ref_audio = count_list("reference_audios")
+    if ref_images > 9:
+        raise PayloadValidationError("inputs.reference_images accepts at most 9 item(s) for Seedance reference models.")
+    if ref_videos > 3:
+        raise PayloadValidationError("inputs.reference_videos accepts at most 3 item(s) for Seedance reference models.")
+    if ref_audio > 3:
+        raise PayloadValidationError("inputs.reference_audios accepts at most 3 item(s) for Seedance reference models.")
+
+    if ref_audio and not (ref_images or ref_videos):
+        raise PayloadValidationError("Seedance reference audio requires at least one image or video reference input.")
+
+    total_duration = (parameters or {}).get("reference_video_total_duration")
+    if total_duration is not None:
+        if isinstance(total_duration, bool) or not isinstance(total_duration, (int, float)):
+            raise PayloadValidationError(
+                "parameters.reference_video_total_duration must be a number for Seedance reference models."
+            )
+        duration_value = float(total_duration)
+        if duration_value < 0 or duration_value > 15:
+            raise PayloadValidationError(
+                "parameters.reference_video_total_duration must be in [0, 15] seconds for Seedance reference models."
+            )
 
 
 def _max_keyframe_index_for_duration(duration: Any) -> int | None:
